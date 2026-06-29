@@ -7,7 +7,8 @@ use ratatui::{
 };
 use crossterm::event::KeyCode;
 
-use crate::app::{Action, App, EditFocus, SearchState};
+use crate::app::{Action, App};
+use crate::state::{EditFocus, SearchState};
 use flow_core::model::Priority;
 
 fn priority_color(p: Priority) -> Color {
