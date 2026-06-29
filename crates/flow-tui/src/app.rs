@@ -285,6 +285,7 @@ mod tests {
             priority: Priority::Medium,
             assignee: String::new(),
             project: String::new(),
+            updated_at: None,
         }
     }
 
@@ -422,6 +423,7 @@ mod tests {
             priority: Priority::Medium,
             assignee: String::new(),
             project: String::new(),
+            updated_at: None,
         }
     }
 

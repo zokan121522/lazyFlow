@@ -107,6 +107,7 @@ pub struct Card {
     pub priority: Priority,
     pub assignee: String,
     pub project: String,
+    pub updated_at: Option<i64>,
 }
 
 pub struct Column {
@@ -176,5 +177,32 @@ impl Board {
                 }
             });
         }
+    }
+
+    /// Return all unique project names, sorted by most recent `updated_at` descending.
+    /// Projects without any timestamped cards are ordered alphabetically at the end.
+    pub fn project_recency(&self) -> Vec<String> {
+        let mut last_used: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+        for col in &self.columns {
+            for card in &col.cards {
+                if let Some(ts) = card.updated_at {
+                    let entry = last_used.entry(card.project.as_str()).or_default();
+                    if ts > *entry {
+                        *entry = ts;
+                    }
+                }
+            }
+        }
+        let mut projects: Vec<String> = last_used
+            .iter()
+            .filter(|(p, _)| !p.is_empty())
+            .map(|(p, _)| p.to_string())
+            .collect();
+        projects.sort_by(|a, b| {
+            let a_ts = last_used.get(a.as_str()).copied().unwrap_or(0);
+            let b_ts = last_used.get(b.as_str()).copied().unwrap_or(0);
+            b_ts.cmp(&a_ts)
+        });
+        projects
     }
 }

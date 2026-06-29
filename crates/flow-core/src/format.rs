@@ -486,6 +486,7 @@ mod tests {
                         priority: Priority::Medium,
                         assignee: String::new(),
                         project: String::new(),
+                        updated_at: None,
                     }],
                 },
                 Column {
@@ -576,6 +577,7 @@ mod tests {
             priority: Priority::High,
             assignee: String::new(),
             project: String::new(),
+            updated_at: None,
         }
     }
 
@@ -599,6 +601,7 @@ mod tests {
             priority: Priority::Low,
             assignee: String::new(),
             project: String::new(),
+            updated_at: None,
         };
         let out = format_card(&card, "done", "Done", Format::Plain)?;
         assert!(!out.contains("  \n"));

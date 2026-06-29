@@ -245,6 +245,7 @@ impl Provider for JiraProvider {
                     priority: Priority::Medium,
                     assignee,
                     project: String::new(),
+                    updated_at: None,
                 });
             }
         }
