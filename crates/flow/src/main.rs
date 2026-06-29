@@ -114,6 +114,18 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         if event::poll(Duration::from_millis(50))? {
             if let Event::Key(k) = event::read()? {
                 if k.kind == KeyEventKind::Press {
+                    if app.show_help {
+                        match k.code {
+                            crossterm::event::KeyCode::Char('?')
+                            | crossterm::event::KeyCode::Esc
+                            | crossterm::event::KeyCode::Char('q') => {
+                                app.show_help = false;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     if let Some(edit) = app.edit_state.as_mut() {
                         match k.code {
                             crossterm::event::KeyCode::Esc => {
@@ -124,6 +136,12 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                 if edit.focus != EditFocus::Priority {
                                     edit.cursor_pos = edit.current_text().len();
                                 }
+                            }
+                            crossterm::event::KeyCode::Char('k')
+                                if k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                edit.insert_char('\n');
+                                continue;
                             }
                             crossterm::event::KeyCode::Enter => {
                                 if edit.project.trim().is_empty() {
@@ -353,6 +371,11 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             }
                             _ => {}
                         }
+                        continue;
+                    }
+
+                    if k.code == crossterm::event::KeyCode::Char('?') {
+                        app.show_help = true;
                         continue;
                     }
 

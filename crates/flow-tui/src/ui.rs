@@ -27,7 +27,7 @@ pub fn help_text(app: &App) -> String {
         format!(" [{}]", app.project_filter.join(","))
     };
     format!(
-        "h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  r refresh  s sort({})  / search  p project{}  Esc/q quit",
+        "h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  ? help  r refresh  s sort({})  / search  p project{}  Esc/q quit",
         app.sort_order.label(),
         filter_info,
     )
@@ -341,7 +341,7 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
         );
 
         f.render_widget(
-            Paragraph::new("Tab: switch field  \u{2190}/\u{2192}: priority  Enter: save  Esc: cancel")
+            Paragraph::new("Tab: switch field  \u{2190}/\u{2192}: priority  Ctrl+K: new line  Enter: save  Esc: cancel")
                 .style(Style::default().fg(Color::DarkGray))
                 .alignment(ratatui::layout::Alignment::Center),
             chunks[6],
@@ -379,6 +379,9 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
             }
         }
     }
+
+    // Help overlay — drawn last so it appears on top of everything
+    render_help(f, app, render_area);
 
     // Project filter modal
     if let Some(pf) = &app.project_filter_state {
@@ -484,6 +487,65 @@ pub fn centered(px: u16, py: u16, r: Rect) -> Rect {
             Constraint::Percentage((100 - px) / 2),
         ])
         .split(v[1])[1]
+}
+
+fn render_help(f: &mut Frame, app: &App, render_area: Option<Rect>) {
+    if !app.show_help {
+        return;
+    }
+    let area = centered(65, 70, render_area.unwrap_or_else(|| f.area()));
+    f.render_widget(Clear, area);
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled("── Navigation ──", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  h / ←       Focus left column"),
+        Line::from("  l / →       Focus right column"),
+        Line::from("  j / ↓       Select next card"),
+        Line::from("  k / ↑       Select previous card"),
+        Line::from(""),
+        Line::from(Span::styled("── Cards ──", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  a / n       New card"),
+        Line::from("  e           Edit card"),
+        Line::from("  d           Delete card"),
+        Line::from("  H           Move card left"),
+        Line::from("  L           Move card right"),
+        Line::from("  Enter       View / close detail"),
+        Line::from(""),
+        Line::from(Span::styled("── Edit Mode ──", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  Tab         Switch field"),
+        Line::from("  ← / →       Change priority"),
+        Line::from("  Ctrl+K      Insert new line"),
+        Line::from("  Enter       Save"),
+        Line::from("  Esc         Cancel"),
+        Line::from(""),
+        Line::from(Span::styled("── General ──", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))),
+        Line::from("  r           Refresh board"),
+        Line::from("  s           Toggle sort order"),
+        Line::from("  /           Search cards"),
+        Line::from("  p           Project filter"),
+        Line::from("  ?           Show this help"),
+        Line::from("  Esc         Close / go back"),
+        Line::from("  q           Quit"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  Any key to close",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+    ];
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .alignment(ratatui::layout::Alignment::Left)
+            .block(
+                Block::default()
+                    .title(" Keyboard Shortcuts ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            ),
+        area,
+    );
 }
 
 fn selected_card_id(app: &App) -> Option<String> {
