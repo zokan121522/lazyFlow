@@ -540,12 +540,13 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 }
 
 fn try_refresh(app: &mut App, provider: &mut Box<dyn flow_core::Provider>, force: bool) {
-    if !force && (app.edit_state.is_some() || app.detail_open) {
-        return; // Safe: don't interrupt editing or detail view
+    if !force && (app.edit_state.is_some() || app.detail_open || app.filter_focus) {
+        return; // Safe: don't interrupt editing, detail view, or filter
     }
     let cur_id = selected_card_id(app);
     match provider.load_board() {
         Ok(mut b) => {
+            b.apply_project_filter(&app.project_filter);
             b.sort_cards_with(app.sort_order);
             app.board = b;
             if let Some(id) = cur_id {
@@ -675,6 +676,15 @@ mod tests {
         let mut provider = flow_core::provider::from_env();
         try_refresh(&mut app, &mut provider, false);
         assert!(app.detail_open);
+    }
+
+    #[test]
+    fn try_refresh_skips_when_filter_focused() {
+        let mut app = App::new(Board { columns: vec![] });
+        app.filter_focus = true;
+        let mut provider = flow_core::provider::from_env();
+        try_refresh(&mut app, &mut provider, false);
+        assert!(app.filter_focus);
     }
 
     #[test]
