@@ -226,7 +226,7 @@ pub fn run(cmd: Command, fmt: Format) -> io::Result<()> {
                 .card_path(&card_id)
                 .map_err(|e| io::Error::other(e.to_string()))?;
 
-            let (cur_title, cur_body, cur_priority, cur_assignee, cur_project) = store_fs::read_card_content(&path)?;
+            let (cur_title, cur_body, cur_priority, cur_assignee, cur_project, _) = store_fs::read_card_content(&path)?;
             let t = title.as_deref().unwrap_or(&cur_title);
             let b = body.as_deref().unwrap_or(&cur_body);
             let p = priority.as_deref().map(Priority::from_str).unwrap_or(cur_priority);

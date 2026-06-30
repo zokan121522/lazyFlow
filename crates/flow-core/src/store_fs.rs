@@ -48,7 +48,7 @@ fn load_cards(root: &Path, col_id: &str) -> io::Result<Vec<Card>> {
 
     for id in order.lines().map(str::trim).filter(|l| !l.is_empty()) {
         let raw = fs::read_to_string(dir.join(format!("{id}.md")))?;
-        let (title, desc, priority, assignee, project) = parse_md(&raw, id);
+        let (title, desc, priority, assignee, project, updated_at) = parse_md(&raw, id);
         cards.push(Card {
             id: id.to_string(),
             title,
@@ -56,13 +56,14 @@ fn load_cards(root: &Path, col_id: &str) -> io::Result<Vec<Card>> {
             priority,
             assignee,
             project,
+            updated_at,
         });
     }
 
     Ok(cards)
 }
 
-pub fn read_card_content(path: &Path) -> io::Result<(String, String, Priority, String, String)> {
+pub fn read_card_content(path: &Path) -> io::Result<(String, String, Priority, String, String, Option<i64>)> {
     let raw = fs::read_to_string(path)?;
     Ok(parse_md(&raw, ""))
 }
@@ -75,6 +76,7 @@ pub fn write_card_content(path: &Path, title: &str, body: &str, priority: Priori
     if !project.is_empty() {
         content.push_str(&format!("project: {project}\n"));
     }
+    content.push_str(&format!("updated_at: {}\n", now_millis()));
     content.push_str(&format!("---\n# {title}\n"));
     if !body.is_empty() {
         content.push('\n');
@@ -86,10 +88,11 @@ pub fn write_card_content(path: &Path, title: &str, body: &str, priority: Priori
     fs::write(path, content)
 }
 
-fn parse_md(raw: &str, fallback: &str) -> (String, String, Priority, String, String) {
+fn parse_md(raw: &str, fallback: &str) -> (String, String, Priority, String, String, Option<i64>) {
     let mut priority = Priority::Medium;
     let mut assignee = String::new();
     let mut project = String::new();
+    let mut updated_at: Option<i64> = None;
     let content;
 
     // Check for frontmatter
@@ -106,6 +109,8 @@ fn parse_md(raw: &str, fallback: &str) -> (String, String, Priority, String, Str
                     assignee = val.trim().to_string();
                 } else if let Some(val) = line.strip_prefix("project:") {
                     project = val.trim().to_string();
+                } else if let Some(val) = line.strip_prefix("updated_at:") {
+                    updated_at = val.trim().parse::<i64>().ok();
                 }
             }
             // Content starts after closing --- and its newline
@@ -136,7 +141,7 @@ fn parse_md(raw: &str, fallback: &str) -> (String, String, Priority, String, Str
     let title = if title.is_empty() { fallback } else { title };
 
     let rest = content[first.len()..].trim().to_string();
-    (title.to_string(), rest, priority, assignee, project)
+    (title.to_string(), rest, priority, assignee, project, updated_at)
 }
 
 pub fn move_card(root: &Path, card_id: &str, to_col_id: &str) -> io::Result<()> {
@@ -367,12 +372,13 @@ mod tests {
 
         write_card_content(&path, "My Title", "Body text", Priority::High, "user@test.com", "ProjectX")?;
 
-        let (title, body, priority, assignee, project) = read_card_content(&path)?;
+        let (title, body, priority, assignee, project, updated_at) = read_card_content(&path)?;
         assert_eq!(title, "My Title");
         assert_eq!(body, "Body text");
         assert_eq!(priority, Priority::High);
         assert_eq!(assignee, "user@test.com");
         assert_eq!(project, "ProjectX");
+        assert!(updated_at.is_some(), "updated_at should be set");
 
         fs::remove_dir_all(root)?;
         Ok(())
@@ -386,7 +392,7 @@ mod tests {
 
         write_card_content(&path, "Title Only", "", Priority::Low, "", "")?;
 
-        let (title, body, priority, assignee, project) = read_card_content(&path)?;
+        let (title, body, priority, assignee, project, _) = read_card_content(&path)?;
         assert_eq!(title, "Title Only");
         assert!(body.is_empty());
         assert_eq!(priority, Priority::Low);
@@ -405,7 +411,7 @@ mod tests {
 
         write_card_content(&path, "Title", "Line 1\nLine 2\nLine 3", Priority::Bug, "", "")?;
 
-        let (title, body, priority, _, _) = read_card_content(&path)?;
+        let (title, body, priority, _, _, _) = read_card_content(&path)?;
         assert_eq!(title, "Title");
         assert!(body.contains("Line 1"));
         assert!(body.contains("Line 3"));
@@ -417,23 +423,26 @@ mod tests {
 
     #[test]
     fn parse_md_without_frontmatter_defaults_to_medium() {
-        let (title, body, priority, assignee, project) = parse_md("# Hello\n\nWorld", "fallback");
+        let (title, body, priority, assignee, project, updated_at) =
+            parse_md("# Hello\n\nWorld", "fallback");
         assert_eq!(title, "Hello");
         assert_eq!(body, "World");
         assert_eq!(priority, Priority::Medium);
         assert!(assignee.is_empty());
         assert!(project.is_empty());
+        assert!(updated_at.is_none());
     }
 
     #[test]
     fn parse_md_with_frontmatter() {
         let raw = "---\npriority: HIGH\nassignee: dev@test.com\nproject: MyProject\n---\n# My Card\n\nDescription";
-        let (title, body, priority, assignee, project) = parse_md(raw, "fallback");
+        let (title, body, priority, assignee, project, updated_at) = parse_md(raw, "fallback");
         assert_eq!(title, "My Card");
         assert_eq!(body, "Description");
         assert_eq!(priority, Priority::High);
         assert_eq!(assignee, "dev@test.com");
         assert_eq!(project, "MyProject");
+        assert!(updated_at.is_none());
     }
 
     #[test]
@@ -468,7 +477,7 @@ mod tests {
 
         for p in [Priority::Low, Priority::Medium, Priority::High, Priority::Bug, Priority::Wishlist] {
             write_card_content(&path, "Test", "Body", p, "", "")?;
-            let (_, _, got, _, _) = read_card_content(&path)?;
+            let (_, _, got, _, _, _) = read_card_content(&path)?;
             assert_eq!(got, p, "roundtrip failed for {:?}", p);
         }
 

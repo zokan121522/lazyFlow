@@ -1,4 +1,9 @@
-use flow_core::model::{Board, Card, Priority, SortOrder};
+use flow_core::model::Board;
+use flow_core::model::SortOrder;
+
+use crate::state::{EditState, SearchState};
+#[cfg(test)]
+use crate::state::EditFocus;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
@@ -17,181 +22,10 @@ pub enum Action {
     Edit,
     ToggleSort,
     Search,
-    ProjectFilter,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EditFocus {
-    Title,
-    Description,
-    Priority,
-    Assignee,
-    Project,
-}
-
-impl EditFocus {
-    pub fn next(self) -> Self {
-        match self {
-            EditFocus::Title => EditFocus::Project,
-            EditFocus::Project => EditFocus::Priority,
-            EditFocus::Priority => EditFocus::Assignee,
-            EditFocus::Assignee => EditFocus::Description,
-            EditFocus::Description => EditFocus::Title,
-        }
-    }
-}
-
-pub struct EditState {
-    pub card_id: String,
-    pub col_id: String,
-    pub is_new: bool,
-    pub title: String,
-    pub description: String,
-    pub priority: Priority,
-    pub assignee: String,
-    pub project: String,
-    pub cursor_pos: usize,
-    pub focus: EditFocus,
-}
-
-impl EditState {
-    pub fn current_text(&self) -> &str {
-        match self.focus {
-            EditFocus::Title => &self.title,
-            EditFocus::Description => &self.description,
-            EditFocus::Assignee => &self.assignee,
-            EditFocus::Project => &self.project,
-            EditFocus::Priority => "",
-        }
-    }
-
-    pub fn current_text_mut(&mut self) -> &mut String {
-        match self.focus {
-            EditFocus::Title => &mut self.title,
-            EditFocus::Description => &mut self.description,
-            EditFocus::Assignee => &mut self.assignee,
-            EditFocus::Project => &mut self.project,
-            EditFocus::Priority => &mut self.title, // unused for priority, but must return something
-        }
-    }
-
-    pub fn insert_char(&mut self, c: char) {
-        if matches!(self.focus, EditFocus::Priority) {
-            return;
-        }
-        let pos = self.cursor_pos;
-        let text = self.current_text_mut();
-        if pos >= text.len() {
-            text.push(c);
-        } else {
-            text.insert(pos, c);
-        }
-        self.cursor_pos += c.len_utf8();
-    }
-
-    pub fn delete_prev(&mut self) {
-        if matches!(self.focus, EditFocus::Priority) {
-            return;
-        }
-        if self.cursor_pos > 0 {
-            let pos = self.cursor_pos;
-            let text = self.current_text_mut();
-            if let Some((idx, _)) = text.char_indices().filter(|(i, _)| *i < pos).last() {
-                text.remove(idx);
-                self.cursor_pos = idx;
-            }
-        }
-    }
-
-    pub fn delete_curr(&mut self) {
-        if matches!(self.focus, EditFocus::Priority) {
-            return;
-        }
-        let pos = self.cursor_pos;
-        let text = self.current_text_mut();
-        if pos < text.len() {
-            text.remove(pos);
-        }
-    }
-
-    pub fn move_cursor_left(&mut self) {
-        if matches!(self.focus, EditFocus::Priority) {
-            self.priority = self.priority.prev();
-            return;
-        }
-        if self.cursor_pos > 0 {
-            let text = self.current_text();
-            let pos = self.cursor_pos;
-            if let Some((idx, _)) = text.char_indices().filter(|(i, _)| *i < pos).last() {
-                self.cursor_pos = idx;
-            }
-        }
-    }
-
-    pub fn move_cursor_right(&mut self) {
-        if self.focus == EditFocus::Priority {
-            self.priority = self.priority.next();
-            return;
-        }
-        let text = self.current_text();
-        let pos = self.cursor_pos;
-        if let Some((idx, _)) = text.char_indices().filter(|(i, _)| *i > pos).next() {
-            self.cursor_pos = idx;
-        } else if pos < text.len() {
-            self.cursor_pos = text.len();
-        }
-    }
-}
-
-pub struct SearchState {
-    pub query: String,
-    pub cursor_pos: usize,
-}
-
-impl SearchState {
-    pub fn new() -> Self {
-        Self {
-            query: String::new(),
-            cursor_pos: 0,
-        }
-    }
-
-    pub fn insert_char(&mut self, c: char) {
-        let pos = self.cursor_pos;
-        if pos >= self.query.len() {
-            self.query.push(c);
-        } else {
-            self.query.insert(pos, c);
-        }
-        self.cursor_pos += c.len_utf8();
-    }
-
-    pub fn delete_prev(&mut self) {
-        if self.cursor_pos > 0 {
-            let pos = self.cursor_pos;
-            if let Some((idx, _)) = self.query.char_indices().filter(|(i, _)| *i < pos).last() {
-                self.query.remove(idx);
-                self.cursor_pos = idx;
-            }
-        }
-    }
-
-    pub fn matches_card(card: &Card, query: &str) -> bool {
-        if query.is_empty() {
-            return false;
-        }
-        let q = query.to_lowercase();
-        card.title.to_lowercase().contains(&q) || card.description.to_lowercase().contains(&q)
-    }
-}
-
-pub struct ProjectFilterState {
-    /// All available project names (sorted). Empty string means "unassigned".
-    pub projects: Vec<String>,
-    /// Selection state per project (parallel to `projects`).
-    pub selected: Vec<bool>,
-    /// Cursor position in the filter modal.
-    pub cursor: usize,
+    TabFocus,
+    FilterLeft,
+    FilterRight,
+    FilterConfirm,
 }
 
 pub struct App {
@@ -203,9 +37,14 @@ pub struct App {
     pub show_help: bool,
     pub edit_state: Option<EditState>,
     pub search_state: Option<SearchState>,
-    pub project_filter_state: Option<ProjectFilterState>,
     /// Active project filter: empty = show all, otherwise only these projects.
     pub project_filter: Vec<String>,
+    /// Whether the filter bar has keyboard focus.
+    pub filter_focus: bool,
+    /// Cursor position in the filter bar (0 = "All", 1+ = projects).
+    pub filter_cursor: usize,
+    /// Set to true when filter changes; main.rs reloads board and clears.
+    pub filter_dirty: bool,
     pub banner: Option<String>,
     pub sort_order: SortOrder,
 }
@@ -221,8 +60,10 @@ impl App {
             show_help: false,
             edit_state: None,
             search_state: None,
-            project_filter_state: None,
             project_filter: Vec::new(),
+            filter_focus: false,
+            filter_cursor: 0,
+            filter_dirty: false,
             banner: None,
             sort_order: SortOrder::default(),
         }
@@ -319,10 +160,10 @@ impl App {
         match a {
             Action::Quit => return true,
             Action::CloseOrQuit => {
-                if self.edit_state.is_some() {
+                if self.filter_focus {
+                    self.filter_focus = false;
+                } else if self.edit_state.is_some() {
                     self.edit_state = None;
-                } else if self.project_filter_state.is_some() {
-                    self.project_filter_state = None;
                 } else if self.search_state.is_some() {
                     self.search_state = None;
                 } else if self.confirm_delete {
@@ -347,7 +188,50 @@ impl App {
                 self.sort_order = self.sort_order.toggle();
                 self.board.sort_cards_with(self.sort_order);
             }
-            Action::Refresh | Action::MoveLeft | Action::MoveRight | Action::Add | Action::Edit | Action::Search | Action::ProjectFilter => {}
+            Action::TabFocus => {
+                if self.filter_focus {
+                    self.filter_focus = false;
+                } else {
+                    let projects = self.board.project_recency();
+                    self.filter_cursor = if self.project_filter.is_empty() {
+                        0
+                    } else {
+                        projects
+                            .iter()
+                            .position(|p| Some(p) == self.project_filter.first())
+                            .map(|i| i + 1)
+                            .unwrap_or(0)
+                    };
+                    self.filter_focus = true;
+                }
+            }
+            Action::FilterLeft => {
+                if self.filter_cursor > 0 {
+                    self.filter_cursor -= 1;
+                }
+            }
+            Action::FilterRight => {
+                let max = self.board.project_recency().len();
+                if self.filter_cursor < max {
+                    self.filter_cursor += 1;
+                }
+            }
+            Action::FilterConfirm => {
+                let projects = self.board.project_recency();
+                if self.filter_cursor == 0 {
+                    self.project_filter.clear();
+                } else if let Some(proj) = projects.get(self.filter_cursor - 1) {
+                    self.project_filter = vec![proj.clone()];
+                }
+                self.filter_focus = false;
+                self.filter_dirty = true;
+            }
+            Action::Refresh
+            | Action::MoveLeft
+            | Action::MoveRight
+            | Action::Add
+            | Action::Edit
+            | Action::Search => {}
         }
         false
     }
@@ -453,6 +337,7 @@ mod tests {
             priority: Priority::Medium,
             assignee: String::new(),
             project: String::new(),
+            updated_at: None,
         }
     }
 
@@ -590,6 +475,7 @@ mod tests {
             priority: Priority::Medium,
             assignee: String::new(),
             project: String::new(),
+            updated_at: None,
         }
     }
 
