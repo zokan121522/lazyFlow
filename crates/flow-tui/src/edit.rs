@@ -141,22 +141,35 @@ pub fn render_edit_modal(f: &mut Frame, app: &App) {
     };
     let inner_width = chunks[5].width.saturating_sub(2) as usize;
     let wrapped_desc = wrap_text(&edit.description, inner_width);
+    let total_lines = wrapped_desc.len();
+    let visible_height = (chunks[5].height.saturating_sub(2)) as usize;
+    let max_scroll = total_lines.saturating_sub(visible_height);
+    let scroll_y = (edit.scroll_y as usize).min(max_scroll) as u16;
+    let desc_title = if max_scroll > 0 {
+        format!("Description  (↑/↓ scroll, {} hidden)", total_lines.saturating_sub(visible_height + scroll_y as usize))
+    } else {
+        "Description".to_string()
+    };
 
     f.render_widget(
         Paragraph::new(wrapped_desc.join("\n"))
+            .scroll((scroll_y, 0))
             .block(
                 Block::default()
-                    .title("Description")
+                    .title(desc_title)
                     .borders(Borders::ALL)
                     .border_style(desc_style),
             ),
         chunks[5],
     );
 
+    let help_text = if edit.focus == EditFocus::Description && max_scroll > 0 {
+        "Tab: switch field  \u{2191}/\u{2193}: scroll  Ctrl+K: new line  Enter: save  Esc: cancel"
+    } else {
+        "Tab: switch field  \u{2190}/\u{2192}: priority  Ctrl+K: new line  Enter: save  Esc: cancel"
+    };
     f.render_widget(
-        Paragraph::new(
-            "Tab: switch field  \u{2190}/\u{2192}: priority  Ctrl+K: new line  Enter: save  Esc: cancel",
-        )
+        Paragraph::new(help_text)
         .style(Style::default().fg(Color::DarkGray))
         .alignment(ratatui::layout::Alignment::Center),
         chunks[6],
@@ -176,9 +189,10 @@ pub fn render_edit_modal(f: &mut Frame, app: &App) {
         EditFocus::Description => {
             let (x, y) =
                 calculate_visual_cursor_pos(&edit.description, edit.cursor_pos, inner_width);
+            let display_y = y.saturating_sub(scroll_y as usize);
             f.set_cursor_position((
                 chunks[5].x + 1 + x as u16,
-                chunks[5].y + 1 + y as u16,
+                chunks[5].y + 1 + display_y as u16,
             ));
         }
         EditFocus::Priority => {
