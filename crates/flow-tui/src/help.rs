@@ -15,11 +15,11 @@ pub fn help_text(app: &App) -> String {
     } else {
         format!(" [{}]", app.project_filter.join(","))
     };
+    let indicator = refresh_indicator(app.refresh_interval_ms);
     format!(
-        "h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  ? help  r / ^R refresh  s sort({})  / search  Tab/p filter{}  Esc/q quit{}",
+        "{indicator}h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  ? help  r / ^R refresh  s sort({})  / search  Tab/p filter{}  Esc/q quit",
         app.sort_order.label(),
         filter_info,
-        refresh_indicator(app.refresh_interval_ms),
     )
 }
 
