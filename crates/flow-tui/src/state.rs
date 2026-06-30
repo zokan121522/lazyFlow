@@ -165,11 +165,4 @@ impl SearchState {
     }
 }
 
-pub struct ProjectFilterState {
-    /// All available project names (sorted). Empty string means "unassigned".
-    pub projects: Vec<String>,
-    /// Selection state per project (parallel to `projects`).
-    pub selected: Vec<bool>,
-    /// Cursor position in the filter modal.
-    pub cursor: usize,
-}
+

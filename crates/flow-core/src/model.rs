@@ -180,29 +180,47 @@ impl Board {
     }
 
     /// Return all unique project names, sorted by most recent `updated_at` descending.
-    /// Projects without any timestamped cards are ordered alphabetically at the end.
+    /// Projects without any timestamped cards are ordered after timestamped ones.
     pub fn project_recency(&self) -> Vec<String> {
-        let mut last_used: std::collections::HashMap<&str, i64> = std::collections::HashMap::new();
+        let mut last_used: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
         for col in &self.columns {
             for card in &col.cards {
+                let proj = card.project.trim();
+                if proj.is_empty() {
+                    continue;
+                }
+                seen.insert(proj.to_string());
                 if let Some(ts) = card.updated_at {
-                    let entry = last_used.entry(card.project.as_str()).or_default();
+                    let entry = last_used.entry(proj.to_string()).or_default();
                     if ts > *entry {
                         *entry = ts;
                     }
                 }
             }
         }
-        let mut projects: Vec<String> = last_used
-            .iter()
-            .filter(|(p, _)| !p.is_empty())
-            .map(|(p, _)| p.to_string())
-            .collect();
-        projects.sort_by(|a, b| {
-            let a_ts = last_used.get(a.as_str()).copied().unwrap_or(0);
-            let b_ts = last_used.get(b.as_str()).copied().unwrap_or(0);
-            b_ts.cmp(&a_ts)
-        });
+
+        let mut projects: Vec<String> = Vec::with_capacity(seen.len());
+
+        // Projects with timestamps: drain HashMap, sort by ts descending
+        let mut timed: Vec<(String, i64)> = last_used.drain().collect();
+        timed.sort_by(|a, b| b.1.cmp(&a.1));
+        // Collect just the project names, keep a separate set for lookup
+        let timed_projects: Vec<String> = timed.into_iter().map(|(p, _)| p).collect();
+        let timed_set: std::collections::HashSet<&str> =
+            timed_projects.iter().map(|p| p.as_str()).collect();
+        for p in &timed_projects {
+            projects.push(p.clone());
+        }
+
+        // Projects without timestamps: in seen but not in timed_set
+        let mut untimed: Vec<&String> = seen.iter().filter(|p| !timed_set.contains(p.as_str())).collect();
+        untimed.sort();
+        for p in untimed {
+            projects.push(p.clone());
+        }
+
         projects
     }
 }

@@ -13,7 +13,19 @@ use crate::edit::render_edit_modal;
 use crate::state::SearchState;
 use crate::util::{centered, priority_color, selected_card_id};
 
-pub fn action_from_key(code: KeyCode) -> Option<Action> {
+pub fn action_from_key(code: KeyCode, filter_focus: bool) -> Option<Action> {
+    if filter_focus {
+        // When filter bar has focus, ←/→/Enter/Esc/Tab are filter-aware
+        return Some(match code {
+            KeyCode::Left => Action::FilterLeft,
+            KeyCode::Right => Action::FilterRight,
+            KeyCode::Enter => Action::FilterConfirm,
+            KeyCode::Esc => Action::CloseOrQuit,
+            KeyCode::Tab => Action::TabFocus,
+            _ => return None,
+        });
+    }
+
     Some(match code {
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Esc => Action::CloseOrQuit,
@@ -34,41 +46,53 @@ pub fn action_from_key(code: KeyCode) -> Option<Action> {
         KeyCode::Char('e') => Action::Edit,
         KeyCode::Char('s') => Action::ToggleSort,
         KeyCode::Char('/') => Action::Search,
-        KeyCode::Char('p') => Action::ProjectFilter,
+        KeyCode::Char('p') | KeyCode::Tab => Action::TabFocus,
 
         _ => return None,
     })
 }
 
 pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
-    let chunks = if app.banner.is_some() {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(1),
-                Constraint::Length(2),
-            ])
-            .split(render_area.unwrap_or_else(|| f.area()))
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(2)])
-            .split(render_area.unwrap_or_else(|| f.area()))
-    };
+    let area = render_area.unwrap_or_else(|| f.area());
 
-    let (banner_area, main, help) = if app.banner.is_some() {
-        (Some(chunks[0]), chunks[1], chunks[2])
-    } else {
-        (None, chunks[0], chunks[1])
-    };
-
-    if let (Some(a), Some(text)) = (banner_area, app.banner.as_deref()) {
-        f.render_widget(
-            Paragraph::new(Span::styled(text, Style::default().fg(Color::Yellow))),
-            a,
-        );
+    // Build constraints: [banner?] [filter:3] [main:Min(1)] [help:2]
+    // Filter needs 3 lines: top border + content + bottom border (Tabs with Borders::ALL)
+    let mut constraints = vec![
+        Constraint::Length(3), // filter bar (visual tabs with borders)
+        Constraint::Min(1),    // main area (board columns)
+        Constraint::Length(2), // help bar
+    ];
+    if app.banner.is_some() {
+        constraints.insert(0, Constraint::Length(1)); // banner
     }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area);
+
+    // Banner
+    let mut idx = 0;
+    if app.banner.is_some() {
+        if let Some(text) = app.banner.as_deref() {
+            f.render_widget(
+                Paragraph::new(Span::styled(text, Style::default().fg(Color::Yellow))),
+                chunks[idx],
+            );
+        }
+        idx += 1;
+    }
+
+    // Filter bar
+    render_filter_bar(f, app, chunks[idx]);
+    idx += 1;
+
+    // Main (board)
+    let main = chunks[idx];
+    idx += 1;
+
+    // Help bar
+    let help = chunks[idx];
 
     if app.board.columns.is_empty() {
         f.render_widget(
@@ -125,8 +149,8 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
             return;
         };
 
-        let area = centered(70, 45, render_area.unwrap_or_else(|| f.area()));
-        f.render_widget(Clear, area);
+        let centered_area = centered(70, 45, area);
+        f.render_widget(Clear, centered_area);
 
         let mut lines = Vec::new();
         lines.push(Line::from(Span::styled(
@@ -171,13 +195,13 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::DarkGray)),
             ),
-            area,
+            centered_area,
         );
     }
 
     if app.confirm_delete {
-        let area = centered(40, 20, render_area.unwrap_or_else(|| f.area()));
-        f.render_widget(Clear, area);
+        let confirm_area = centered(40, 20, area);
+        f.render_widget(Clear, confirm_area);
 
         let card_id = selected_card_id(app).unwrap_or_else(|| "Unknown".to_string());
         let text = vec![
@@ -205,7 +229,7 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::Red)),
                 ),
-            area,
+            confirm_area,
         );
     }
 
@@ -214,39 +238,53 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
 
     // Help overlay — drawn last so it appears on top of everything
     render_help(f, app, render_area);
+}
 
-    // Project filter modal
-    if let Some(pf) = &app.project_filter_state {
-        let area = centered(50, 50, f.area());
-        f.render_widget(Clear, area);
+/// Render the persistent project filter bar as visual tabs at the top.
+fn render_filter_bar(f: &mut Frame, app: &App, rect: Rect) {
+    use ratatui::widgets::Tabs;
 
-        let mut items: Vec<ListItem> = Vec::new();
-        for (i, proj_name) in pf.projects.iter().enumerate() {
-            let check = if pf.selected[i] { "[x]" } else { "[ ]" };
-            let label = if proj_name.is_empty() {
-                "(sin proyecto)"
-            } else {
-                proj_name.as_str()
-            };
-            items.push(ListItem::new(Line::from(vec![
-                Span::styled(format!("{check} "), Style::default().fg(Color::Cyan)),
-                Span::raw(label),
-            ])));
-        }
-
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .title("Project Filter")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Magenta)),
-            )
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-
-        let mut state = ListState::default();
-        state.select(Some(pf.cursor));
-        f.render_stateful_widget(list, area, &mut state);
+    let projects = app.board.project_recency();
+    // Build tab titles: "All" + projects
+    let mut tab_titles: Vec<Line> = Vec::with_capacity(1 + projects.len());
+    tab_titles.push(Line::from(" All "));
+    for proj in &projects {
+        tab_titles.push(Line::from(format!(" {} ", proj)));
     }
+
+    // Selected index follows filter_cursor (0 = All, 1+ = project position)
+    let selected = app.filter_cursor;
+
+    // Border changes color when filter bar has focus
+    let border_style = if app.filter_focus {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let hint = if app.filter_focus {
+        " Tab to unfocus "
+    } else {
+        " Tab / p to filter "
+    };
+
+    let tabs = Tabs::new(tab_titles)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(Span::styled(hint, Style::default().fg(Color::DarkGray))),
+        )
+        .select(selected)
+        .divider(Span::raw(" │ "))
+        .highlight_style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().fg(Color::DarkGray));
+
+    f.render_widget(tabs, rect);
 }
 
 pub fn draw_col(f: &mut Frame, app: &App, idx: usize, rect: Rect) {

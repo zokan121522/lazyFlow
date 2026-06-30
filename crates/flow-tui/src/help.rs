@@ -16,7 +16,7 @@ pub fn help_text(app: &App) -> String {
         format!(" [{}]", app.project_filter.join(","))
     };
     format!(
-        "h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  ? help  r refresh  s sort({})  / search  p project{}  Esc/q quit",
+        "h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  ? help  r refresh  s sort({})  / search  Tab/p filter{}  Esc/q quit",
         app.sort_order.label(),
         filter_info,
     )
@@ -62,13 +62,21 @@ pub fn render_help(f: &mut Frame, app: &App, render_area: Option<Rect>) {
         Line::from("  Esc         Cancel"),
         Line::from(""),
         Line::from(Span::styled(
+            "── Project Filter ──",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from("  Tab / p     Focus filter bar"),
+        Line::from("  ← / →       Select project"),
+        Line::from("  Enter       Confirm filter"),
+        Line::from("  Esc         Unfocus filter bar"),
+        Line::from(""),
+        Line::from(Span::styled(
             "── General ──",
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         )),
         Line::from("  r           Refresh board"),
         Line::from("  s           Toggle sort order"),
         Line::from("  /           Search cards"),
-        Line::from("  p           Project filter"),
         Line::from("  ?           Show this help"),
         Line::from("  Esc         Close / go back"),
         Line::from("  q           Quit"),

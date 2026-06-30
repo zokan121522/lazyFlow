@@ -1,8 +1,7 @@
-use flow_core::model::{Board, SortOrder};
-#[cfg(test)]
-use flow_core::model::Card;
+use flow_core::model::Board;
+use flow_core::model::SortOrder;
 
-use crate::state::{EditState, ProjectFilterState, SearchState};
+use crate::state::{EditState, SearchState};
 #[cfg(test)]
 use crate::state::EditFocus;
 
@@ -23,7 +22,10 @@ pub enum Action {
     Edit,
     ToggleSort,
     Search,
-    ProjectFilter,
+    TabFocus,
+    FilterLeft,
+    FilterRight,
+    FilterConfirm,
 }
 
 pub struct App {
@@ -35,9 +37,14 @@ pub struct App {
     pub show_help: bool,
     pub edit_state: Option<EditState>,
     pub search_state: Option<SearchState>,
-    pub project_filter_state: Option<ProjectFilterState>,
     /// Active project filter: empty = show all, otherwise only these projects.
     pub project_filter: Vec<String>,
+    /// Whether the filter bar has keyboard focus.
+    pub filter_focus: bool,
+    /// Cursor position in the filter bar (0 = "All", 1+ = projects).
+    pub filter_cursor: usize,
+    /// Set to true when filter changes; main.rs reloads board and clears.
+    pub filter_dirty: bool,
     pub banner: Option<String>,
     pub sort_order: SortOrder,
 }
@@ -53,8 +60,10 @@ impl App {
             show_help: false,
             edit_state: None,
             search_state: None,
-            project_filter_state: None,
             project_filter: Vec::new(),
+            filter_focus: false,
+            filter_cursor: 0,
+            filter_dirty: false,
             banner: None,
             sort_order: SortOrder::default(),
         }
@@ -151,10 +160,10 @@ impl App {
         match a {
             Action::Quit => return true,
             Action::CloseOrQuit => {
-                if self.edit_state.is_some() {
+                if self.filter_focus {
+                    self.filter_focus = false;
+                } else if self.edit_state.is_some() {
                     self.edit_state = None;
-                } else if self.project_filter_state.is_some() {
-                    self.project_filter_state = None;
                 } else if self.search_state.is_some() {
                     self.search_state = None;
                 } else if self.confirm_delete {
@@ -179,7 +188,50 @@ impl App {
                 self.sort_order = self.sort_order.toggle();
                 self.board.sort_cards_with(self.sort_order);
             }
-            Action::Refresh | Action::MoveLeft | Action::MoveRight | Action::Add | Action::Edit | Action::Search | Action::ProjectFilter => {}
+            Action::TabFocus => {
+                if self.filter_focus {
+                    self.filter_focus = false;
+                } else {
+                    let projects = self.board.project_recency();
+                    self.filter_cursor = if self.project_filter.is_empty() {
+                        0
+                    } else {
+                        projects
+                            .iter()
+                            .position(|p| Some(p) == self.project_filter.first())
+                            .map(|i| i + 1)
+                            .unwrap_or(0)
+                    };
+                    self.filter_focus = true;
+                }
+            }
+            Action::FilterLeft => {
+                if self.filter_cursor > 0 {
+                    self.filter_cursor -= 1;
+                }
+            }
+            Action::FilterRight => {
+                let max = self.board.project_recency().len();
+                if self.filter_cursor < max {
+                    self.filter_cursor += 1;
+                }
+            }
+            Action::FilterConfirm => {
+                let projects = self.board.project_recency();
+                if self.filter_cursor == 0 {
+                    self.project_filter.clear();
+                } else if let Some(proj) = projects.get(self.filter_cursor - 1) {
+                    self.project_filter = vec![proj.clone()];
+                }
+                self.filter_focus = false;
+                self.filter_dirty = true;
+            }
+            Action::Refresh
+            | Action::MoveLeft
+            | Action::MoveRight
+            | Action::Add
+            | Action::Edit
+            | Action::Search => {}
         }
         false
     }

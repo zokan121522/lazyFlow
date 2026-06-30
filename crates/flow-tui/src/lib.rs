@@ -6,4 +6,4 @@ pub mod ui;
 pub mod util;
 
 pub use app::{App, Action};
-pub use state::{EditFocus, EditState, ProjectFilterState, SearchState};
+pub use state::{EditFocus, EditState, SearchState};
