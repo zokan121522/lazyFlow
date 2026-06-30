@@ -127,13 +127,14 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     }
 
                     if let Some(edit) = app.edit_state.as_mut() {
-                        // Clamp scroll_y to prevent exceeding max_scroll (stuck on ↑)
+                        // Clamp scroll_y generously — actual clamping happens in render.
+                        // Use generous estimate to avoid getting stuck on ↑/↓.
                         let est_lines = edit
                             .description
                             .lines()
                             .count()
-                            .max(edit.description.len() / 50)
-                            .saturating_sub(3) as u16; // assume ≥3 visible lines
+                            .max(edit.description.len() / 40)
+                            .saturating_add(5) as u16; // generous padding
                         edit.scroll_y = edit.scroll_y.min(est_lines);
 
                         match k.code {
@@ -155,10 +156,6 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                 continue;
                             }
                             crossterm::event::KeyCode::Enter => {
-                                if edit.project.trim().is_empty() {
-                                    app.banner = Some("Project is required".to_string());
-                                    continue;
-                                }
                                 let is_new = edit.is_new;
                                 let col_id = edit.col_id.clone();
                                 let title = edit.title.clone();
@@ -251,7 +248,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 
                     // Detail view scroll: up/down scroll content
                     if app.detail_open {
-                        // Clamp detail_scroll to prevent exceeding max_scroll (stuck on ↑)
+                        // Clamp detail_scroll generously — actual clamping happens in render.
                         let est_lines = app
                             .board
                             .columns
@@ -259,8 +256,8 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             .and_then(|col| col.cards.get(app.row))
                             .map(|card| {
                                 let lines = card.description.lines().count();
-                                let extra = card.description.len() / 60;
-                                (7 + lines + extra).saturating_sub(15) as u16
+                                let extra = card.description.len() / 40;
+                                (7 + lines + extra).saturating_add(5) as u16
                             })
                             .unwrap_or(0);
                         app.detail_scroll = app.detail_scroll.min(est_lines);
