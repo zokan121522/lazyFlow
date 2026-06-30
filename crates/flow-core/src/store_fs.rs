@@ -47,7 +47,12 @@ fn load_cards(root: &Path, col_id: &str) -> io::Result<Vec<Card>> {
     let mut cards = Vec::new();
 
     for id in order.lines().map(str::trim).filter(|l| !l.is_empty()) {
-        let raw = fs::read_to_string(dir.join(format!("{id}.md")))?;
+        let md_path = dir.join(format!("{id}.md"));
+        if !md_path.exists() {
+            // Orphaned card in order.txt — skip silently rather than fail
+            continue;
+        }
+        let raw = fs::read_to_string(&md_path)?;
         let (title, desc, priority, assignee, project, updated_at) = parse_md(&raw, id);
         cards.push(Card {
             id: id.to_string(),
@@ -69,12 +74,30 @@ pub fn read_card_content(path: &Path) -> io::Result<(String, String, Priority, S
 }
 
 pub fn write_card_content(path: &Path, title: &str, body: &str, priority: Priority, assignee: &str, project: &str) -> io::Result<()> {
-    let mut content = format!("---\npriority: {}\n", priority.label());
+    // Preserve any unknown frontmatter fields from the existing file
+    let extra_fields = if path.exists() {
+        match fs::read_to_string(path) {
+            Ok(raw) => parse_extra_frontmatter(&raw),
+            Err(_) => vec![],
+        }
+    } else {
+        vec![]
+    };
+
+    let mut content = String::from("---\n");
+    content.push_str(&format!("priority: {}\n", priority.label()));
     if !assignee.is_empty() {
         content.push_str(&format!("assignee: {assignee}\n"));
     }
     if !project.is_empty() {
         content.push_str(&format!("project: {project}\n"));
+    }
+    // Re-write any extra fields that are not the known ones
+    for (key, val) in &extra_fields {
+        match key.as_str() {
+            "priority" | "assignee" | "project" | "updated_at" => continue,
+            _ => content.push_str(&format!("{key}: {val}\n")),
+        }
     }
     content.push_str(&format!("updated_at: {}\n", now_millis()));
     content.push_str(&format!("---\n# {title}\n"));
@@ -88,6 +111,35 @@ pub fn write_card_content(path: &Path, title: &str, body: &str, priority: Priori
     fs::write(path, content)
 }
 
+/// Extract all key-value pairs from the frontmatter of a markdown file.
+/// Used to preserve unknown/custom fields when rewriting a card.
+fn parse_extra_frontmatter(raw: &str) -> Vec<(String, String)> {
+    let mut fields = Vec::new();
+    if !raw.starts_with("---\n") && !raw.starts_with("---\r\n") {
+        return fields;
+    }
+    let after_open = if raw.starts_with("---\r\n") { 5 } else { 4 };
+    // Support both LF and CRLF for the closing delimiter
+    let close_pos = raw[after_open..]
+        .find("\n---")
+        .or_else(|| raw[after_open..].find("\r\n---"));
+    let Some(close_pos) = close_pos else {
+        return fields;
+    };
+    let frontmatter = &raw[after_open..after_open + close_pos];
+    for line in frontmatter.lines() {
+        let line = line.trim();
+        if let Some(pos) = line.find(':') {
+            let key = line[..pos].trim().to_string();
+            let val = line[pos + 1..].trim().to_string();
+            if !key.is_empty() {
+                fields.push((key, val));
+            }
+        }
+    }
+    fields
+}
+
 fn parse_md(raw: &str, fallback: &str) -> (String, String, Priority, String, String, Option<i64>) {
     let mut priority = Priority::Medium;
     let mut assignee = String::new();
@@ -97,9 +149,15 @@ fn parse_md(raw: &str, fallback: &str) -> (String, String, Priority, String, Str
 
     // Check for frontmatter
     if raw.starts_with("---\n") || raw.starts_with("---\r\n") {
-        // Find closing ---
+        // Find closing --- (support both LF and CRLF)
         let after_open = if raw.starts_with("---\r\n") { 5 } else { 4 };
-        if let Some(close_pos) = raw[after_open..].find("\n---") {
+        let close_pos = raw[after_open..]
+            .find("\n---")
+            .or_else(|| raw[after_open..].find("\r\n---"));
+        if let Some(close_pos) = close_pos {
+            // Determine if this was a CRLF close
+            let is_crlf_close = raw[after_open + close_pos..].starts_with("\r\n---");
+            let close_len = if is_crlf_close { 5 } else { 4 }; // "\r\n---" or "\n---"
             let frontmatter = &raw[after_open..after_open + close_pos];
             for line in frontmatter.lines() {
                 let line = line.trim();
@@ -114,7 +172,7 @@ fn parse_md(raw: &str, fallback: &str) -> (String, String, Priority, String, Str
                 }
             }
             // Content starts after closing --- and its newline
-            let body_start = after_open + close_pos + 4; // "\n---" is 4 chars
+            let body_start = after_open + close_pos + close_len;
             content = if body_start < raw.len() {
                 // Skip the newline after ---
                 let rest = &raw[body_start..];
@@ -464,6 +522,66 @@ mod tests {
         let b = load_board(&root)?;
         let titles: Vec<&str> = b.columns[0].cards.iter().map(|c| c.title.as_str()).collect();
         assert_eq!(titles, vec!["Crash", "Alpha", "Beta", "Zebra", "Nice to have"]);
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn write_card_content_preserves_extra_frontmatter_fields() -> TestResult {
+        let root = tmp_root();
+        fs::create_dir_all(&root)?;
+        let path = root.join("CARD.md");
+
+        // Create initial file with extra fields
+        fs::write(
+            &path,
+            "---\npriority: MEDIUM\ntags: rust,tui\ncustom_field: value42\ndue_date: 2026-07-15\n---\n# Original\n\nBody",
+        )?;
+
+        // Rewrite with standard fields
+        write_card_content(&path, "Updated", "New body", Priority::High, "dev@test.com", "Flow")?;
+
+        let raw = fs::read_to_string(&path)?;
+        // Extra fields should still be present
+        assert!(raw.contains("tags: rust,tui"), "tags should be preserved");
+        assert!(raw.contains("custom_field: value42"), "custom_field should be preserved");
+        assert!(raw.contains("due_date: 2026-07-15"), "due_date should be preserved");
+        // Standard fields should be there
+        assert!(raw.contains("priority: HIGH"));
+        assert!(raw.contains("project: Flow"));
+        assert!(raw.contains("assignee: dev@test.com"));
+        assert!(raw.contains("updated_at:"));
+        assert!(raw.contains("# Updated"));
+
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn parse_md_crlf_frontmatter() {
+        // Windows-style line endings in frontmatter
+        let raw = "---\r\npriority: HIGH\r\nproject: Test\r\n---\r\n# CRLF Card\r\n\r\nBody text";
+        let (title, body, priority, _assignee, project, _updated_at) = parse_md(raw, "fallback");
+        assert_eq!(title, "CRLF Card");
+        assert_eq!(body, "Body text");
+        assert_eq!(priority, Priority::High);
+        assert_eq!(project, "Test");
+    }
+
+    #[test]
+    fn write_card_content_does_not_lose_extra_fields_when_file_absent() -> TestResult {
+        // Verifies that write_card_content works on new (non-existent) files
+        let root = tmp_root();
+        fs::create_dir_all(&root)?;
+        let path = root.join("fresh.md");
+
+        write_card_content(&path, "Fresh", "Content", Priority::Low, "", "")?;
+
+        let (title, body, priority, _, _, _) = read_card_content(&path)?;
+        assert_eq!(title, "Fresh");
+        assert_eq!(body, "Content");
+        assert_eq!(priority, Priority::Low);
 
         fs::remove_dir_all(root)?;
         Ok(())
