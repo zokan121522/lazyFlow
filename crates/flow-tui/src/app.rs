@@ -181,7 +181,12 @@ impl App {
             Action::FocusRight => self.focus(1),
             Action::SelectUp => self.select(-1),
             Action::SelectDown => self.select(1),
-            Action::ToggleDetail => self.detail_open = !self.detail_open,
+            Action::ToggleDetail => {
+                self.detail_open = !self.detail_open;
+                if self.detail_open {
+                    self.detail_scroll = 0;
+                }
+            }
             Action::Delete => {
                 if !self.board.columns.is_empty() && !self.board.columns[self.col].cards.is_empty() {
                     self.confirm_delete = true;

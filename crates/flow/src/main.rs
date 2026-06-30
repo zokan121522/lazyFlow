@@ -127,6 +127,15 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     }
 
                     if let Some(edit) = app.edit_state.as_mut() {
+                        // Clamp scroll_y to prevent exceeding max_scroll (stuck on ↑)
+                        let est_lines = edit
+                            .description
+                            .lines()
+                            .count()
+                            .max(edit.description.len() / 50)
+                            .saturating_sub(3) as u16; // assume ≥3 visible lines
+                        edit.scroll_y = edit.scroll_y.min(est_lines);
+
                         match k.code {
                             crossterm::event::KeyCode::Esc => {
                                 app.edit_state = None;
@@ -136,6 +145,8 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                 if edit.focus != EditFocus::Priority {
                                     edit.cursor_pos = edit.current_text().len();
                                 }
+                                // Reset scroll when switching fields
+                                edit.scroll_y = 0;
                             }
                             crossterm::event::KeyCode::Char('k')
                                 if k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
@@ -223,9 +234,48 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                     edit.cursor_pos = edit.current_text().len();
                                 }
                             }
+                            crossterm::event::KeyCode::Up
+                                if edit.focus == EditFocus::Description =>
+                            {
+                                edit.scroll_y = edit.scroll_y.saturating_sub(1);
+                            }
+                            crossterm::event::KeyCode::Down
+                                if edit.focus == EditFocus::Description =>
+                            {
+                                edit.scroll_y = (edit.scroll_y + 1).min(est_lines);
+                            }
                             _ => {}
                         }
                         continue;
+                    }
+
+                    // Detail view scroll: up/down scroll content
+                    if app.detail_open {
+                        // Clamp detail_scroll to prevent exceeding max_scroll (stuck on ↑)
+                        let est_lines = app
+                            .board
+                            .columns
+                            .get(app.col)
+                            .and_then(|col| col.cards.get(app.row))
+                            .map(|card| {
+                                let lines = card.description.lines().count();
+                                let extra = card.description.len() / 60;
+                                (7 + lines + extra).saturating_sub(15) as u16
+                            })
+                            .unwrap_or(0);
+                        app.detail_scroll = app.detail_scroll.min(est_lines);
+
+                        match k.code {
+                            crossterm::event::KeyCode::Up => {
+                                app.detail_scroll = app.detail_scroll.saturating_sub(1);
+                                continue;
+                            }
+                            crossterm::event::KeyCode::Down => {
+                                app.detail_scroll = (app.detail_scroll + 1).min(est_lines);
+                                continue;
+                            }
+                            _ => {}
+                        }
                     }
 
                     if app.search_state.is_some() {
