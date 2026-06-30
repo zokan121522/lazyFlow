@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use ratatui::{
     Frame,
     layout::Rect,
@@ -15,7 +17,7 @@ pub fn help_text(app: &App) -> String {
     } else {
         format!(" [{}]", app.project_filter.join(","))
     };
-    let indicator = refresh_indicator(app.refresh_interval_ms);
+    let indicator = refresh_indicator(app.refresh_interval_ms, app.last_refresh_at);
     format!(
         "{indicator}h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  ? help  r / ^R refresh  s sort({})  / search  Tab/p filter{}  Esc/q quit",
         app.sort_order.label(),
@@ -23,13 +25,20 @@ pub fn help_text(app: &App) -> String {
     )
 }
 
-fn refresh_indicator(interval_ms: u64) -> String {
+fn refresh_indicator(interval_ms: u64, last_refresh_at: Option<Instant>) -> String {
     if interval_ms == 0 {
-        String::new()
-    } else {
-        let secs = (interval_ms + 500) / 1000; // round to nearest second
-        format!("  [♻ {}s]", secs)
+        return String::new();
     }
+
+    // Show [✓] for ~1.5s after a successful refresh, then back to [♻ Ns]
+    if let Some(t) = last_refresh_at {
+        if t.elapsed().as_millis() < 1500 {
+            return "  [✓]".to_string();
+        }
+    }
+
+    let secs = (interval_ms + 500) / 1000; // round to nearest second
+    format!("  [♻ {}s]", secs)
 }
 
 pub fn render_help(f: &mut Frame, app: &App, render_area: Option<Rect>) {

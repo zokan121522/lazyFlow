@@ -51,6 +51,8 @@ pub struct App {
     pub sort_order: SortOrder,
     /// Auto-refresh interval in ms (0 = disabled). Displayed in the help bar.
     pub refresh_interval_ms: u64,
+    /// When the last successful auto-refresh happened (used for [✓] indicator).
+    pub last_refresh_at: Option<std::time::Instant>,
 }
 
 impl App {
@@ -72,6 +74,7 @@ impl App {
             banner: None,
             sort_order: SortOrder::default(),
             refresh_interval_ms: 3000,
+            last_refresh_at: None,
         }
     }
 

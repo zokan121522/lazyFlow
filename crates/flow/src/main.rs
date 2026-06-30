@@ -495,7 +495,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                     }
                                     Err(e) => app.banner = Some(format!("Refresh failed: {e}")),
                                 }
-                                last_refresh = Instant::now();
+                                app.last_refresh_at = Some(Instant::now());
                             }
                             _ => {
                                 if app.apply(a) {
@@ -553,6 +553,7 @@ fn try_refresh(app: &mut App, provider: &mut Box<dyn flow_core::Provider>, force
             } else {
                 app.focus_first_non_empty();
             }
+            app.last_refresh_at = Some(Instant::now());
             app.banner = None;
         }
         Err(e) => {
