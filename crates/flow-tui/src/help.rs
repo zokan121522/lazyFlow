@@ -16,7 +16,7 @@ pub fn help_text(app: &App) -> String {
         format!(" [{}]", app.project_filter.join(","))
     };
     format!(
-        "h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  ? help  r refresh  s sort({})  / search  Tab/p filter{}  Esc/q quit",
+        "h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  ? help  r / ^R refresh  s sort({})  / search  Tab/p filter{}  Esc/q quit",
         app.sort_order.label(),
         filter_info,
     )
@@ -58,6 +58,7 @@ pub fn render_help(f: &mut Frame, app: &App, render_area: Option<Rect>) {
         Line::from("  Tab         Switch field"),
         Line::from("  ← / →       Change priority"),
         Line::from("  Ctrl+K      Insert new line"),
+        Line::from("  Ctrl+R      Force refresh board"),
         Line::from("  Enter       Save"),
         Line::from("  Esc         Cancel"),
         Line::from(""),

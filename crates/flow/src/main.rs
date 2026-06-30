@@ -3,7 +3,7 @@ use std::{
     io, panic,
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crossterm::{
@@ -17,7 +17,7 @@ use ratatui::{
 };
 
 use flow_core::{Board, provider, model::Priority};
-use flow_tui::{App, Action, EditState, EditFocus, SearchState, ui::render, ui::action_from_key};
+use flow_tui::{App, Action, EditFocus, EditState, SearchState, ui::action_from_key, ui::render};
 
 fn main() -> io::Result<()> {
     enable_raw_mode()?;
@@ -57,6 +57,9 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             return Ok(());
         }
     };
+
+    let refresh_interval = refresh_interval_ms();
+    let mut last_refresh = Instant::now();
 
     let mut app = App::new(board);
     app.focus_first_non_empty();
@@ -105,6 +108,13 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
             }
         }
 
+        // Auto-refresh: poll board from disk at configurable interval
+        // Skips refresh when editing or viewing detail to avoid disrupting the user.
+        if refresh_interval > 0 && last_refresh.elapsed() >= Duration::from_millis(refresh_interval) {
+            try_refresh(&mut app, &mut provider, false);
+            last_refresh = Instant::now();
+        }
+
         if quitting && move_rx.is_none() && move_queue.is_empty() {
             return Ok(());
         }
@@ -123,6 +133,15 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             }
                             _ => {}
                         }
+                        continue;
+                    }
+
+                    // Ctrl+R force-refresh — works even in edit/detail mode
+                    if k.code == crossterm::event::KeyCode::Char('r')
+                        && k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                    {
+                        try_refresh(&mut app, &mut provider, true);
+                        last_refresh = Instant::now();
                         continue;
                     }
 
@@ -460,16 +479,22 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                 if quitting {
                                     continue;
                                 }
+                                let cur_id = selected_card_id(&app);
                                 match provider.load_board() {
                                     Ok(mut b) => {
                                         b.apply_project_filter(&app.project_filter);
                                         b.sort_cards_with(app.sort_order);
                                         app.board = b;
-                                        app.focus_first_non_empty();
+                                        if let Some(id) = cur_id {
+                                            focus_card_by_id(&mut app, &id);
+                                        } else {
+                                            app.focus_first_non_empty();
+                                        }
                                         app.banner = None;
                                     }
                                     Err(e) => app.banner = Some(format!("Refresh failed: {e}")),
                                 }
+                                last_refresh = Instant::now();
                             }
                             _ => {
                                 if app.apply(a) {
@@ -511,6 +536,37 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     }
 
     Ok(())
+}
+
+fn try_refresh(app: &mut App, provider: &mut Box<dyn flow_core::Provider>, force: bool) {
+    if !force && (app.edit_state.is_some() || app.detail_open) {
+        return; // Safe: don't interrupt editing or detail view
+    }
+    let cur_id = selected_card_id(app);
+    match provider.load_board() {
+        Ok(mut b) => {
+            b.sort_cards_with(app.sort_order);
+            app.board = b;
+            if let Some(id) = cur_id {
+                focus_card_by_id(app, &id);
+            } else {
+                app.focus_first_non_empty();
+            }
+            app.banner = None;
+        }
+        Err(e) => {
+            if force {
+                app.banner = Some(format!("Refresh failed: {e}"));
+            }
+        }
+    }
+}
+
+fn refresh_interval_ms() -> u64 {
+    std::env::var("FLOW_REFRESH_INTERVAL_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(3000)
 }
 
 fn selected_card_id(app: &App) -> Option<String> {
@@ -574,4 +630,78 @@ fn spawn_move(card_id: String, dst: String) -> Receiver<Result<Option<Board>, St
         }
     });
     rx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_interval_default_is_3000() {
+        assert_eq!(refresh_interval_ms(), 3000);
+    }
+
+    #[test]
+    fn try_refresh_skips_when_editing() {
+        let board = Board { columns: vec![] };
+        let mut app = App::new(board);
+        // Simulate editing
+        app.edit_state = Some(EditState {
+            card_id: "x".into(),
+            col_id: "todo".into(),
+            is_new: false,
+            title: "test".into(),
+            description: "".into(),
+            priority: Priority::Medium,
+            assignee: "".into(),
+            project: "".into(),
+            cursor_pos: 0,
+            focus: EditFocus::Title,
+            scroll_y: 0,
+        });
+        // With force=false, should skip without crashing
+        let mut provider = flow_core::provider::from_env();
+        try_refresh(&mut app, &mut provider, false);
+        // App state unchanged (still in edit mode)
+        assert!(app.edit_state.is_some());
+    }
+
+    #[test]
+    fn try_refresh_skips_when_detail_open() {
+        let mut app = App::new(Board { columns: vec![] });
+        app.detail_open = true;
+        let mut provider = flow_core::provider::from_env();
+        try_refresh(&mut app, &mut provider, false);
+        assert!(app.detail_open);
+    }
+
+    #[test]
+    fn try_refresh_force_works_even_with_edit() {
+        let mut app = App::new(Board { columns: vec![] });
+        app.edit_state = Some(EditState {
+            card_id: "x".into(),
+            col_id: "todo".into(),
+            is_new: false,
+            title: "test".into(),
+            description: "".into(),
+            priority: Priority::Medium,
+            assignee: "".into(),
+            project: "".into(),
+            cursor_pos: 0,
+            focus: EditFocus::Title,
+            scroll_y: 0,
+        });
+        let mut provider = flow_core::provider::from_env();
+        // force=true should attempt refresh even with edit open
+        // This won't crash even if load_board fails (e.g. no board configured)
+        try_refresh(&mut app, &mut provider, true);
+        // Edit state should remain (force doesn't close edit, just refreshes board)
+        assert!(app.edit_state.is_some());
+    }
+
+    #[test]
+    fn selected_card_id_returns_none_for_empty_board() {
+        let app = App::new(Board { columns: vec![] });
+        assert_eq!(selected_card_id(&app), None);
+    }
 }
