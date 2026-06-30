@@ -62,6 +62,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     let mut last_refresh = Instant::now();
 
     let mut app = App::new(board);
+    app.refresh_interval_ms = refresh_interval;
     app.focus_first_non_empty();
     type MoveOutcome = Result<Option<Board>, String>;
     let mut move_rx: Option<Receiver<MoveOutcome>> = None;

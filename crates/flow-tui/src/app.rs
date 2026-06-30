@@ -49,6 +49,8 @@ pub struct App {
     pub detail_scroll: u16,
     pub banner: Option<String>,
     pub sort_order: SortOrder,
+    /// Auto-refresh interval in ms (0 = disabled). Displayed in the help bar.
+    pub refresh_interval_ms: u64,
 }
 
 impl App {
@@ -69,6 +71,7 @@ impl App {
             detail_scroll: 0,
             banner: None,
             sort_order: SortOrder::default(),
+            refresh_interval_ms: 3000,
         }
     }
 

@@ -16,10 +16,20 @@ pub fn help_text(app: &App) -> String {
         format!(" [{}]", app.project_filter.join(","))
     };
     format!(
-        "h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  ? help  r / ^R refresh  s sort({})  / search  Tab/p filter{}  Esc/q quit",
+        "h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  ? help  r / ^R refresh  s sort({})  / search  Tab/p filter{}  Esc/q quit{}",
         app.sort_order.label(),
         filter_info,
+        refresh_indicator(app.refresh_interval_ms),
     )
+}
+
+fn refresh_indicator(interval_ms: u64) -> String {
+    if interval_ms == 0 {
+        String::new()
+    } else {
+        let secs = (interval_ms + 500) / 1000; // round to nearest second
+        format!("  [♻ {}s]", secs)
+    }
 }
 
 pub fn render_help(f: &mut Frame, app: &App, render_area: Option<Rect>) {
