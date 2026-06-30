@@ -45,6 +45,8 @@ pub struct App {
     pub filter_cursor: usize,
     /// Set to true when filter changes; main.rs reloads board and clears.
     pub filter_dirty: bool,
+    /// Vertical scroll offset for the detail view.
+    pub detail_scroll: u16,
     pub banner: Option<String>,
     pub sort_order: SortOrder,
 }
@@ -64,6 +66,7 @@ impl App {
             filter_focus: false,
             filter_cursor: 0,
             filter_dirty: false,
+            detail_scroll: 0,
             banner: None,
             sort_order: SortOrder::default(),
         }

@@ -338,6 +338,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                     project: String::new(),
                                     cursor_pos: 8,
                                     focus: EditFocus::Title,
+                                    scroll_y: 0,
                                 });
                             }
                             Action::Delete => {
@@ -369,6 +370,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                     project: card.project.clone(),
                                     cursor_pos: card.title.len(),
                                     focus: EditFocus::Title,
+                                    scroll_y: 0,
                                 });
                             }
                             Action::MoveLeft => {
