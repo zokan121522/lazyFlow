@@ -152,7 +152,7 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
         let centered_area = centered(70, 45, area);
         f.render_widget(Clear, centered_area);
 
-        let mut lines = Vec::new();
+        let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
             &card.id,
             Style::default().add_modifier(Modifier::BOLD),
@@ -188,13 +188,25 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
             }
         }
 
+        let total_lines = lines.len();
+        let visible_height = (centered_area.height.saturating_sub(2)) as usize;
+        let max_scroll = total_lines.saturating_sub(visible_height);
+        let scroll_y = (app.detail_scroll as usize).min(max_scroll) as u16;
+        let detail_title = if max_scroll > 0 {
+            format!("Detail  (↑/↓ scroll, {} hidden)", total_lines.saturating_sub(visible_height + scroll_y as usize))
+        } else {
+            "Detail".to_string()
+        };
+
         f.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-                Block::default()
-                    .title("Detail")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray)),
-            ),
+            Paragraph::new(lines).wrap(Wrap { trim: false })
+                .scroll((scroll_y, 0))
+                .block(
+                    Block::default()
+                        .title(detail_title)
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::DarkGray)),
+                ),
             centered_area,
         );
     }
