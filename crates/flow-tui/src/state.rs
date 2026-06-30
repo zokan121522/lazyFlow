@@ -32,6 +32,8 @@ pub struct EditState {
     pub project: String,
     pub cursor_pos: usize,
     pub focus: EditFocus,
+    /// Vertical scroll offset for the description field.
+    pub scroll_y: u16,
 }
 
 impl EditState {
