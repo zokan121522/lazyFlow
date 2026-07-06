@@ -147,3 +147,29 @@ pub fn calculate_visual_cursor_pos(text: &str, cursor_pos: usize, width: usize) 
 
     (0, y)
 }
+
+/// Find the best byte position in `text` closest to a target visual line and column.
+/// Scans all character boundaries and the end position to find the closest match.
+pub fn find_closest_in_visual_line(text: &str, target_x: usize, target_y: usize, width: usize) -> usize {
+    let mut best_pos = 0;
+    let mut best_x_dist = usize::MAX;
+
+    for (byte_idx, _) in text.char_indices() {
+        let (x, y) = calculate_visual_cursor_pos(text, byte_idx, width);
+        if y == target_y {
+            let x_dist = x.abs_diff(target_x);
+            if x_dist < best_x_dist {
+                best_x_dist = x_dist;
+                best_pos = byte_idx;
+            }
+        }
+    }
+
+    // Also try end-of-string position
+    let (x, y) = calculate_visual_cursor_pos(text, text.len(), width);
+    if y == target_y && x.abs_diff(target_x) < best_x_dist {
+        best_pos = text.len();
+    }
+
+    best_pos
+}

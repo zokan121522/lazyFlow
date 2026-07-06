@@ -147,15 +147,17 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     }
 
                     if let Some(edit) = app.edit_state.as_mut() {
-                        // Clamp scroll_y generously — actual clamping happens in render.
-                        // Use generous estimate to avoid getting stuck on ↑/↓.
-                        let est_lines = edit
-                            .description
-                            .lines()
-                            .count()
-                            .max(edit.description.len() / 40)
-                            .saturating_add(5) as u16; // generous padding
-                        edit.scroll_y = edit.scroll_y.min(est_lines);
+                        // Terminal-size helper for description field (85% modal, 13 rows fixed overhead)
+                        let desc_dims = || -> (usize, usize) {
+                            crossterm::terminal::size()
+                                .ok()
+                                .map(|(tw, th)| {
+                                    let iw = ((tw as usize).saturating_mul(70) / 100).saturating_sub(2);
+                                    let dh = ((th as usize).saturating_mul(85) / 100).saturating_sub(15);
+                                    (iw, dh.max(1))
+                                })
+                                .unwrap_or((40, 5))
+                        };
 
                         match k.code {
                             crossterm::event::KeyCode::Esc => {
@@ -166,13 +168,21 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                 if edit.focus != EditFocus::Priority {
                                     edit.cursor_pos = edit.current_text().len();
                                 }
-                                // Reset scroll when switching fields
                                 edit.scroll_y = 0;
+                                // When entering Description, snap cursor into visible area
+                                if edit.focus == EditFocus::Description {
+                                    let (iw, dh) = desc_dims();
+                                    edit.ensure_cursor_visible(iw, dh);
+                                }
                             }
                             crossterm::event::KeyCode::Char('k')
                                 if k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
                             {
                                 edit.insert_char('\n');
+                                if edit.focus == EditFocus::Description {
+                                    let (iw, dh) = desc_dims();
+                                    edit.ensure_cursor_visible(iw, dh);
+                                }
                                 continue;
                             }
                             crossterm::event::KeyCode::Enter => {
@@ -228,12 +238,24 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             }
                             crossterm::event::KeyCode::Char(c) => {
                                 edit.insert_char(c);
+                                if edit.focus == EditFocus::Description {
+                                    let (iw, dh) = desc_dims();
+                                    edit.ensure_cursor_visible(iw, dh);
+                                }
                             }
                             crossterm::event::KeyCode::Backspace => {
                                 edit.delete_prev();
+                                if edit.focus == EditFocus::Description {
+                                    let (iw, dh) = desc_dims();
+                                    edit.ensure_cursor_visible(iw, dh);
+                                }
                             }
                             crossterm::event::KeyCode::Delete => {
                                 edit.delete_curr();
+                                if edit.focus == EditFocus::Description {
+                                    let (iw, dh) = desc_dims();
+                                    edit.ensure_cursor_visible(iw, dh);
+                                }
                             }
                             crossterm::event::KeyCode::Left => {
                                 edit.move_cursor_left();
@@ -254,12 +276,30 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             crossterm::event::KeyCode::Up
                                 if edit.focus == EditFocus::Description =>
                             {
-                                edit.scroll_y = edit.scroll_y.saturating_sub(1);
+                                let (iw, dh) = desc_dims();
+                                edit.move_cursor_up(iw);
+                                edit.ensure_cursor_visible(iw, dh);
                             }
                             crossterm::event::KeyCode::Down
                                 if edit.focus == EditFocus::Description =>
                             {
-                                edit.scroll_y = (edit.scroll_y + 1).min(est_lines);
+                                let (iw, dh) = desc_dims();
+                                edit.move_cursor_down(iw);
+                                edit.ensure_cursor_visible(iw, dh);
+                            }
+                            crossterm::event::KeyCode::PageUp
+                                if edit.focus == EditFocus::Description =>
+                            {
+                                let (iw, dh) = desc_dims();
+                                edit.move_cursor_up_n(dh, iw);
+                                edit.ensure_cursor_visible(iw, dh);
+                            }
+                            crossterm::event::KeyCode::PageDown
+                                if edit.focus == EditFocus::Description =>
+                            {
+                                let (iw, dh) = desc_dims();
+                                edit.move_cursor_down_n(dh, iw);
+                                edit.ensure_cursor_visible(iw, dh);
                             }
                             _ => {}
                         }
