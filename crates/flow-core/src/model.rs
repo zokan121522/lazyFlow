@@ -1,4 +1,4 @@
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SortOrder {
     /// Higher priority first (Bug → High → Medium → Low → Wishlist)
     Asc,
@@ -28,7 +28,7 @@ impl Default for SortOrder {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Priority {
     Low,
     Medium,
@@ -100,6 +100,7 @@ impl Priority {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Card {
     pub id: String,
     pub title: String,
@@ -110,12 +111,14 @@ pub struct Card {
     pub updated_at: Option<i64>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Column {
     pub id: String,
     pub title: String,
     pub cards: Vec<Card>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Board {
     pub columns: Vec<Column>,
 }

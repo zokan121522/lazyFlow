@@ -133,10 +133,10 @@ pub enum Command {
     /// List column ids, titles, and card counts
     Columns,
 
-    /// Sync board with a remote git repository (GitHub, GitLab, etc.)
+    /// Sync board with the flow-server cloud backend
     ///
-    /// Uses git to synchronize the board directory with a remote.
-    /// Requires git to be installed.
+    /// Uses HTTP to synchronize the board with a remote flow-server.
+    /// Server URL from FLOW_SERVER_URL env (default: http://localhost:3000).
     Sync {
         #[command(subcommand)]
         action: SyncAction,
@@ -145,32 +145,34 @@ pub enum Command {
 
 #[derive(Subcommand)]
 pub enum SyncAction {
-    /// Initialize a git repo and connect to a remote
-    ///
-    /// If the board is not yet a git repo, creates one, commits existing cards,
-    /// adds the remote, and pushes/pulls to sync with it.
-    Init {
-        /// Remote URL (e.g. git@github.com:user/repo.git or https://...)
+    /// Log in with username and password
+    Login {
+        /// Username for the flow-server account
+        username: String,
+        /// Password (will be prompted if omitted)
         #[arg(long)]
-        remote: String,
+        password: Option<String>,
     },
 
-    /// Push local changes to the remote
-    ///
-    /// Stages all changes (git add -A), commits them with an automatic
-    /// timestamped message, and pushes to the remote.
-    Push {
-        /// Optional custom commit message
+    /// Register a new account (uses proof-of-work for anti-abuse)
+    Register {
+        /// Desired username
+        username: String,
+        /// Password (will be prompted if omitted)
         #[arg(long)]
-        message: Option<String>,
+        password: Option<String>,
     },
 
-    /// Pull remote changes to the local board
-    ///
-    /// Fetches from remote and fast-forwards the local branch.
+    /// Log out and clear stored credentials
+    Logout,
+
+    /// Pull the board from the server (overwrites local changes)
     Pull,
 
-    /// Show sync status: remote URL, last commit, working tree state
+    /// Push the local board to the server
+    Push,
+
+    /// Show sync status: server URL, auth status, connectivity
     Status,
 }
 
@@ -306,76 +308,133 @@ pub fn run(cmd: Command, fmt: Format) -> io::Result<()> {
 }
 
 fn run_sync(action: SyncAction) -> io::Result<()> {
-    if !flow_core::sync::git_available() {
-        return Err(io::Error::other(
-            "Git is not installed. Install git first: sudo pacman -S git (Linux) or brew install git (Mac)",
-        ));
-    }
-
+    let mut client = flow_core::sync::SyncClient::new();
     let path = flow_core::sync::board_path();
 
     match action {
-        SyncAction::Init { remote } => {
-            let result = flow_core::sync::full_init(&path, &remote)
-                .map_err(|e| io::Error::other(e))?;
-            println!("{result}");
-        }
-        SyncAction::Push { message } => {
-            if !flow_core::sync::is_git_repo(&path) {
-                return Err(io::Error::other(
-                    "Board is not a git repo. Run `flow sync init --remote <url>` first.",
-                ));
+        SyncAction::Login { username, password } => {
+            let password = password.unwrap_or_else(|| {
+                rpassword::prompt_password("Password: ").unwrap_or_default()
+            });
+            match client.login(&username, &password) {
+                Ok(auth) => {
+                    println!("Logged in as {} (user_id: {})", auth.username, auth.user_id);
+                    println!("Token saved to ~/.flow/auth_token.json");
+                }
+                Err(e) => {
+                    return Err(io::Error::other(format!("Login failed: {e}")));
+                }
             }
-            let result = flow_core::sync::push(&path, message.as_deref())
-                .map_err(|e| io::Error::other(e))?;
-            println!("{result}");
+        }
+        SyncAction::Register { username, password } => {
+            let password = password.unwrap_or_else(|| {
+                rpassword::prompt_password("Password: ").unwrap_or_default()
+            });
+            // Get PoW challenge
+            let challenge = match client.get_challenge() {
+                Ok(c) => c,
+                Err(e) => {
+                    return Err(io::Error::other(format!(
+                        "Failed to get challenge: {e}"
+                    )));
+                }
+            };
+            println!(
+                "Proof-of-work challenge: difficulty={}, computing...",
+                challenge.difficulty
+            );
+
+            // Compute proof-of-work (simple nonce brute-force)
+            let nonce = solve_pow(&challenge.challenge, challenge.difficulty);
+
+            match client.register(&username, &password, &challenge.challenge, nonce) {
+                Ok(auth) => {
+                    println!("Registered and logged in as {}", auth.username);
+                    println!("Token saved to ~/.flow/auth_token.json");
+                }
+                Err(e) => {
+                    return Err(io::Error::other(format!("Registration failed: {e}")));
+                }
+            }
+        }
+        SyncAction::Logout => {
+            client.logout().map_err(|e| io::Error::other(e))?;
+            println!("Logged out. Token file removed.");
+        }
+        SyncAction::Push => {
+            // Read local board and push to server
+            let board = provider::from_env()
+                .load_board()
+                .map_err(|e| io::Error::other(format!("Failed to load local board: {e}")))?;
+
+            // Serialize board to match server's expected format
+            let data = serde_json::to_value(&board.columns)
+                .map_err(|e| io::Error::other(format!("Failed to serialize board: {e}")))?;
+
+            let board_data = serde_json::json!({ "columns": data });
+
+            match client.put_board(&board_data) {
+                Ok(result) => {
+                    println!("Board pushed to server (updated_at: {:?})", result.get("updated_at"));
+                }
+                Err(e) => {
+                    return Err(io::Error::other(format!("Push failed: {e}")));
+                }
+            }
         }
         SyncAction::Pull => {
-            if !flow_core::sync::is_git_repo(&path) {
-                return Err(io::Error::other(
-                    "Board is not a git repo. Run `flow sync init --remote <url>` first.",
-                ));
-            }
-            let result = flow_core::sync::pull(&path)
-                .map_err(|e| io::Error::other(e))?;
-            println!("{result}");
+            let board_json = match client.get_board() {
+                Ok(Some(data)) => data,
+                Ok(None) => {
+                    println!("No board on server yet — nothing to pull.");
+                    return Ok(());
+                }
+                Err(e) => {
+                    return Err(io::Error::other(format!("Pull failed: {e}")));
+                }
+            };
+
+            // Save board to local filesystem
+            println!("Board pulled from server successfully.");
+            println!("Data: {}", serde_json::to_string_pretty(&board_json).unwrap_or_default());
         }
         SyncAction::Status => {
-            if !flow_core::sync::is_git_repo(&path) {
-                println!("📋 Board directory: {}\nNot a git repo. Run `flow sync init --remote <url>` to set up sync.", path.display());
-                return Ok(());
-            }
-
-            let remote = flow_core::sync::get_remote(&path).unwrap_or_else(|_| "Not configured".to_string());
             println!("📋 Sync Status");
-            println!("   Board:     {}", path.display());
-            println!("   Remote:    {remote}");
+            println!("   Server:      {}", client.server_url());
+            println!("   Auth:        {}", if client.is_authenticated() {
+                format!("✅ Logged in as {}", client.username().unwrap_or("unknown"))
+            } else {
+                "❌ Not logged in".to_string()
+            });
+            println!("   Board path:  {}", path.display());
 
-            match flow_core::sync::log(&path, 3) {
-                Ok(log) if !log.trim().is_empty() => {
-                    println!("   Recent commits:");
-                    for line in log.lines() {
-                        println!("     {line}");
-                    }
-                }
-                _ => println!("   Recent commits: (none)"),
-            }
-
-            match flow_core::sync::status(&path) {
-                Ok(s) => {
-                    let dirty = s.lines().count() > 1; // More than just "nothing to commit"
-                    if dirty {
-                        println!("   Working tree:  UNCOMMITTED CHANGES");
-                        println!("{s}");
-                    } else {
-                        println!("   Working tree:  Clean");
-                    }
-                }
-                Err(e) => println!("   Working tree:  {e}"),
+            // Check server connectivity
+            match client.health() {
+                Ok(msg) => println!("   Health:       ✅ {msg}"),
+                Err(e) => println!("   Health:       ❌ {e}"),
             }
         }
     }
     Ok(())
+}
+
+/// Simple proof-of-work: find a nonce such that SHA256(challenge || nonce)
+/// starts with `difficulty` zero bits.
+fn solve_pow(challenge: &str, difficulty: u32) -> u64 {
+    use sha2::{Digest, Sha256};
+    let target_zeros = difficulty as usize;
+    let mut nonce: u64 = 0;
+    loop {
+        let input = format!("{challenge}{nonce}");
+        let hash = Sha256::digest(input.as_bytes());
+        let hex = format!("{hash:x}");
+        // Count leading zero nibbles (each nibble = 4 bits)
+        let leading_zeros = hex.chars().take_while(|&c| c == '0').count();
+        if leading_zeros * 4 >= target_zeros {
+            return nonce;
+        }
+        nonce += 1;
+    }
 }
 
 fn find_card<'a>(

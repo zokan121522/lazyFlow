@@ -8,4 +8,4 @@ pub mod sync;
 
 pub use model::{Board, Card, Column, Priority, SortOrder};
 pub use provider::{Provider, ProviderError};
-pub use sync::{board_path, full_init, git_available, is_git_repo, log, pull, push, status};
+pub use sync::{board_path, AuthResponse, CardResponse, ChallengeResponse, SyncClient, SyncError};
