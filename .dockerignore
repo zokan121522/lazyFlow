@@ -1,0 +1,11 @@
+target/
+.git/
+.github/
+*.md
+boards/
+scripts/
+demo.gif
+install.sh
+LICENSE
+README.md
+.cargo-ok

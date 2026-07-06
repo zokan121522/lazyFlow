@@ -1,0 +1,35 @@
+services:
+  flow-server:
+    build:
+      context: .
+      dockerfile: crates/flow-server/Dockerfile
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://flow:${DB_PASSWORD:-flow}@db:5432/flow
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      HOST: "0.0.0.0"
+      PORT: "3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: flow
+      POSTGRES_USER: flow
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-flow}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flow -d flow"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
