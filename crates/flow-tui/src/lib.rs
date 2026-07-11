@@ -1,5 +1,6 @@
 pub mod app;
 pub mod edit;
+pub mod gdrive_tui;
 pub mod help;
 pub mod state;
 pub mod ui;

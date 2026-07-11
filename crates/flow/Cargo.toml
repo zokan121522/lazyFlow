@@ -14,3 +14,4 @@ flow-core = { workspace = true }
 flow-tui = { workspace = true }
 crossterm = { workspace = true }
 ratatui = { workspace = true }
+serde_json = { workspace = true }

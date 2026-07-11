@@ -288,9 +288,11 @@ mod tests {
     #[test]
     fn board_path_uses_env() {
         // Test with FLOW_BOARD_PATH set
-        std::env::set_var("FLOW_BOARD_PATH", "/tmp/test-flow-board");
+        // SAFETY: test-only, single-threaded, no other code reads this env var concurrently
+        unsafe { std::env::set_var("FLOW_BOARD_PATH", "/tmp/test-flow-board"); }
         let p = board_path();
         assert_eq!(p, PathBuf::from("/tmp/test-flow-board"));
-        std::env::remove_var("FLOW_BOARD_PATH");
+        // SAFETY: same reasoning as above
+        unsafe { std::env::remove_var("FLOW_BOARD_PATH"); }
     }
 }

@@ -5,15 +5,25 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::app::{Action, App};
+use crate::gdrive_tui;
 use crate::help::{help_text, render_help};
 use crate::edit::render_edit_modal;
 use crate::state::SearchState;
 use crate::util::{centered, priority_color, selected_card_id};
 
-pub fn action_from_key(code: KeyCode, filter_focus: bool) -> Option<Action> {
+pub fn action_from_key(code: KeyCode, modifiers: KeyModifiers, filter_focus: bool) -> Option<Action> {
+    // Ctrl+G toggles GDrive popup — works from any state
+    if code == KeyCode::Char('g') && modifiers.contains(KeyModifiers::CONTROL) {
+        return Some(Action::GDrive);
+    }
+    // Ctrl+T fallback for GDrive (some terminals intercept Ctrl+G)
+    if code == KeyCode::Char('t') && modifiers.contains(KeyModifiers::CONTROL) {
+        return Some(Action::GDrive);
+    }
+
     if filter_focus {
         // When filter bar has focus, ←/→/Enter/Esc/Tab are filter-aware
         return Some(match code {
@@ -26,30 +36,35 @@ pub fn action_from_key(code: KeyCode, filter_focus: bool) -> Option<Action> {
         });
     }
 
-    Some(match code {
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Esc => Action::CloseOrQuit,
+    // Plain keys (no Ctrl modifier)
+    if modifiers.is_empty() {
+        return Some(match code {
+            KeyCode::Char('q') => Action::Quit,
+            KeyCode::Esc => Action::CloseOrQuit,
 
-        KeyCode::Char('h') | KeyCode::Left => Action::FocusLeft,
-        KeyCode::Char('l') | KeyCode::Right => Action::FocusRight,
+            KeyCode::Char('h') | KeyCode::Left => Action::FocusLeft,
+            KeyCode::Char('l') | KeyCode::Right => Action::FocusRight,
 
-        KeyCode::Char('j') | KeyCode::Down => Action::SelectDown,
-        KeyCode::Char('k') | KeyCode::Up => Action::SelectUp,
+            KeyCode::Char('j') | KeyCode::Down => Action::SelectDown,
+            KeyCode::Char('k') | KeyCode::Up => Action::SelectUp,
 
-        KeyCode::Char('H') => Action::MoveLeft,
-        KeyCode::Char('L') => Action::MoveRight,
+            KeyCode::Char('H') => Action::MoveLeft,
+            KeyCode::Char('L') => Action::MoveRight,
 
-        KeyCode::Enter => Action::ToggleDetail,
-        KeyCode::Char('r') => Action::Refresh,
-        KeyCode::Char('d') => Action::Delete,
-        KeyCode::Char('a') | KeyCode::Char('n') => Action::Add,
-        KeyCode::Char('e') => Action::Edit,
-        KeyCode::Char('s') => Action::ToggleSort,
-        KeyCode::Char('/') => Action::Search,
-        KeyCode::Char('p') | KeyCode::Tab => Action::TabFocus,
+            KeyCode::Enter => Action::ToggleDetail,
+            KeyCode::Char('r') => Action::Refresh,
+            KeyCode::Char('d') => Action::Delete,
+            KeyCode::Char('a') | KeyCode::Char('n') => Action::Add,
+            KeyCode::Char('e') => Action::Edit,
+            KeyCode::Char('s') => Action::ToggleSort,
+            KeyCode::Char('/') => Action::Search,
+            KeyCode::Char('p') | KeyCode::Tab => Action::TabFocus,
 
-        _ => return None,
-    })
+            _ => return None,
+        });
+    }
+
+    None
 }
 
 pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
@@ -149,8 +164,7 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
             return;
         };
 
-        let centered_area = centered(70, 45, area);
-        f.render_widget(Clear, centered_area);
+        f.render_widget(Clear, main);
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
@@ -189,7 +203,7 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
         }
 
         let total_lines = lines.len();
-        let visible_height = (centered_area.height.saturating_sub(2)) as usize;
+        let visible_height = (main.height.saturating_sub(2)) as usize;
         let max_scroll = total_lines.saturating_sub(visible_height);
         let scroll_y = (app.detail_scroll as usize).min(max_scroll) as u16;
         let detail_title = if max_scroll > 0 {
@@ -207,7 +221,7 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::DarkGray)),
                 ),
-            centered_area,
+            main,
         );
     }
 
@@ -248,6 +262,17 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
     // Edit modal
     render_edit_modal(f, app);
 
+    // GDrive sync popup
+    if app.gdrive_popup_open {
+        gdrive_tui::render_popup(
+            f,
+            &app.gdrive_status,
+            app.gdrive_last_sync.as_deref(),
+            app.gdrive_has_client_id,
+            app.gdrive_client_id_input.as_deref(),
+        );
+    }
+
     // Help overlay — drawn last so it appears on top of everything
     render_help(f, app, render_area);
 }
@@ -274,10 +299,11 @@ fn render_filter_bar(f: &mut Frame, app: &App, rect: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let gdrive_label = gdrive_tui::status_indicator(&app.gdrive_status);
     let hint = if app.filter_focus {
-        " Tab to unfocus "
+        format!("{gdrive_label} Tab to unfocus ")
     } else {
-        " Tab / p to filter "
+        format!("{gdrive_label} Tab / p to filter ")
     };
 
     let tabs = Tabs::new(tab_titles)

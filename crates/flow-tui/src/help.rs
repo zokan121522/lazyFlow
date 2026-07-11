@@ -19,7 +19,7 @@ pub fn help_text(app: &App) -> String {
     };
     let indicator = refresh_indicator(app.refresh_interval_ms, app.last_refresh_at);
     format!(
-        "{indicator}h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  ? help  r / ^R refresh  s sort({})  / search  Tab/p filter{}  Esc/q quit",
+        "{indicator}h/l ←/→ focus  j/k ↑/↓ select  H/L move  a/n new  e edit  d del  Enter detail  ? help  r / ^R refresh  s sort({})  / search  Tab/p filter{}  ^G/^T gdrive  Esc/q quit",
         app.sort_order.label(),
         filter_info,
     )
@@ -97,6 +97,7 @@ pub fn render_help(f: &mut Frame, app: &App, render_area: Option<Rect>) {
         Line::from("  r           Refresh board"),
         Line::from("  s           Toggle sort order"),
         Line::from("  /           Search cards"),
+        Line::from("  ^G / ^T     Google Drive sync"),
         Line::from("  ?           Show this help"),
         Line::from("  Esc         Close / go back"),
         Line::from("  q           Quit"),

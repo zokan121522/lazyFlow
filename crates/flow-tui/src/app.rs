@@ -1,3 +1,4 @@
+use flow_core::gdrive::GDriveStatus;
 use flow_core::model::Board;
 use flow_core::model::SortOrder;
 
@@ -26,6 +27,7 @@ pub enum Action {
     FilterLeft,
     FilterRight,
     FilterConfirm,
+    GDrive,
 }
 
 pub struct App {
@@ -53,6 +55,17 @@ pub struct App {
     pub refresh_interval_ms: u64,
     /// When the last successful auto-refresh happened (used for [✓] indicator).
     pub last_refresh_at: Option<std::time::Instant>,
+    /// Whether the Google Drive sync popup is open.
+    pub gdrive_popup_open: bool,
+    /// Current GDrive connection status (for rendering).
+    pub gdrive_status: GDriveStatus,
+    /// Human-readable last sync timestamp.
+    pub gdrive_last_sync: Option<String>,
+    /// Whether an OAuth client ID is available.
+    pub gdrive_has_client_id: bool,
+    /// Buffer for editing the Client ID in the GDrive popup.
+    /// `None` = not editing, `Some(...)` = editing with this text.
+    pub gdrive_client_id_input: Option<String>,
 }
 
 impl App {
@@ -75,6 +88,11 @@ impl App {
             sort_order: SortOrder::default(),
             refresh_interval_ms: 3000,
             last_refresh_at: None,
+            gdrive_popup_open: false,
+            gdrive_status: GDriveStatus::Disconnected,
+            gdrive_last_sync: None,
+            gdrive_has_client_id: false,
+            gdrive_client_id_input: None,
         }
     }
 
@@ -239,6 +257,14 @@ impl App {
                 }
                 self.filter_focus = false;
                 self.filter_dirty = true;
+            }
+            Action::GDrive => {
+                self.gdrive_popup_open = !self.gdrive_popup_open;
+                if self.gdrive_popup_open {
+                    self.banner = Some("GDrive: press C to connect, E to edit Client ID".to_string());
+                } else {
+                    self.banner = None;
+                }
             }
             Action::Refresh
             | Action::MoveLeft
