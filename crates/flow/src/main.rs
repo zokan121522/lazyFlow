@@ -16,6 +16,7 @@ use ratatui::{
     backend::CrosstermBackend,
 };
 
+use flow_core::gdrive::{GDriveClient, GDriveStatus, PollResult};
 use flow_core::{Board, provider, model::Priority};
 use flow_tui::{App, Action, EditFocus, EditState, SearchState, ui::action_from_key, ui::render};
 
@@ -64,6 +65,46 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     let mut app = App::new(board);
     app.refresh_interval_ms = refresh_interval;
     app.focus_first_non_empty();
+
+    // Per-project color overrides from colors.json (best-effort).
+    app.project_colors = provider.load_project_colors();
+
+    // ── Google Drive init ──────────────────────────────────────────────
+    let mut gdrive = GDriveClient::new();
+    app.gdrive_status = gdrive.status().clone();
+    app.gdrive_has_client_id = gdrive.has_client_id();
+    if let Some(sync) = gdrive.last_sync() {
+        app.gdrive_last_sync = Some(sync.to_string());
+    }
+
+    // Pull board from Google Drive on startup (last-write-wins).
+    if gdrive.is_authenticated() {
+        match gdrive.download_board() {
+            Ok(Some(board_json)) => {
+                if let Ok(remote_board) = serde_json::from_value(board_json) {
+                    app.board = remote_board;
+                    app.focus_first_non_empty();
+                    app.banner = Some("Loaded board from Google Drive".to_string());
+                    app.last_refresh_at = Some(Instant::now());
+                }
+            }
+            Ok(None) => {
+                // First time — no board on GDrive yet.
+                // Push the local board so GDrive has a copy.
+                if let Ok(board_json) = serde_json::to_value(&app.board) {
+                    if let Err(e) = gdrive.upload_board(&board_json) {
+                        eprintln!("[gdrive] initial upload failed: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                app.banner = Some(format!("GDrive pull failed: {e}"));
+            }
+        }
+        app.gdrive_status = gdrive.status().clone();
+        app.gdrive_last_sync = gdrive.last_sync().map(|s| s.to_string());
+    }
+
     type MoveOutcome = Result<Option<Board>, String>;
     let mut move_rx: Option<Receiver<MoveOutcome>> = None;
     let mut move_queue: VecDeque<(String, String)> = VecDeque::new();
@@ -82,6 +123,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                     );
                     move_queue.clear();
                     move_rx = None;
+                    gdrive_sync(&mut gdrive, &mut app);
                     update_quit_banner(&mut app, quitting, &move_queue, move_rx.is_some());
                 }
                 Ok(Ok(None)) => {
@@ -91,6 +133,8 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                         app.banner = Some(format!("Moving... ({} queued)", move_queue.len()));
                     } else {
                         app.banner = None;
+                        // Move completed successfully — sync to GDrive
+                        gdrive_sync(&mut gdrive, &mut app);
                     }
                     update_quit_banner(&mut app, quitting, &move_queue, move_rx.is_some());
                 }
@@ -114,6 +158,31 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
         if refresh_interval > 0 && last_refresh.elapsed() >= Duration::from_millis(refresh_interval) {
             try_refresh(&mut app, &mut provider, false);
             last_refresh = Instant::now();
+        }
+
+        // ── GDrive auth polling ─────────────────────────────────────────
+        if matches!(gdrive.status(), GDriveStatus::Authorizing { .. }) {
+            let result = gdrive.try_poll_token();
+            match result {
+                PollResult::Success => {
+                    app.banner = Some("GDrive: Connected!".to_string());
+                    // Push board to freshly-authorized Drive
+                    gdrive_sync(&mut gdrive, &mut app);
+                }
+                PollResult::Expired => {
+                    app.banner = Some("GDrive: Authorization expired. Try again.".to_string());
+                }
+                PollResult::Denied => {
+                    app.banner = Some("GDrive: Authorization denied.".to_string());
+                }
+                PollResult::TransientError(msg) => {
+                    eprintln!("[gdrive] poll error: {msg}");
+                }
+                PollResult::Waiting => {}
+            }
+            app.gdrive_status = gdrive.status().clone();
+            app.gdrive_has_client_id = gdrive.has_client_id();
+            app.gdrive_last_sync = gdrive.last_sync().map(|s| s.to_string());
         }
 
         if quitting && move_rx.is_none() && move_queue.is_empty() {
@@ -146,16 +215,140 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                         continue;
                     }
 
+                    // Ctrl+G / Ctrl+T — GDrive popup toggle (direct, before action_from_key)
+                    if (k.code == crossterm::event::KeyCode::Char('g')
+                        || k.code == crossterm::event::KeyCode::Char('t'))
+                        && k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL)
+                    {
+                        app.gdrive_popup_open = !app.gdrive_popup_open;
+                        if app.gdrive_popup_open {
+                            app.banner =
+                                Some("GDrive: press C to connect, E to edit Client ID".to_string());
+                        } else {
+                            app.banner = None;
+                        }
+                        continue;
+                    }
+
+                    // ── GDrive popup key handling ────────────────────────
+                    if app.gdrive_popup_open {
+                        // If editing client ID, route chars to the buffer
+                        if let Some(ref mut buf) = app.gdrive_client_id_input {
+                            match k.code {
+                                crossterm::event::KeyCode::Enter => {
+                                    let client_id = buf.trim().to_string();
+                                    if !client_id.is_empty() {
+                                        // Save via config
+                                        let mut config = gdrive.get_config();
+                                        config.client_id = client_id.clone();
+                                        if let Err(e) = gdrive.save_config(&config) {
+                                            app.banner =
+                                                Some(format!("GDrive: failed to save config: {e}"));
+                                        } else {
+                                            gdrive.set_client_id(client_id);
+                                            app.banner = Some("GDrive: Client ID saved".to_string());
+                                        }
+                                    }
+                                    app.gdrive_client_id_input = None;
+                                }
+                                crossterm::event::KeyCode::Esc => {
+                                    app.gdrive_client_id_input = None;
+                                }
+                                crossterm::event::KeyCode::Char(c) => {
+                                    buf.push(c);
+                                }
+                                crossterm::event::KeyCode::Backspace => {
+                                    buf.pop();
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            match k.code {
+                                crossterm::event::KeyCode::Char('c')
+                                | crossterm::event::KeyCode::Char('C') => {
+                                    if let Err(e) = gdrive.start_device_auth() {
+                                        app.banner = Some(format!("GDrive: {e}"));
+                                    }
+                                }
+                                crossterm::event::KeyCode::Char('d')
+                                | crossterm::event::KeyCode::Char('D') => {
+                                    if let Err(e) = gdrive.disconnect() {
+                                        app.banner = Some(format!("GDrive: {e}"));
+                                    }
+                                    app.gdrive_popup_open = false;
+                                }
+                                crossterm::event::KeyCode::Char('s')
+                                | crossterm::event::KeyCode::Char('S') => {
+                                    gdrive_sync(&mut gdrive, &mut app);
+                                    app.banner = Some("GDrive: Synced".to_string());
+                                }
+                                crossterm::event::KeyCode::Char('e')
+                                | crossterm::event::KeyCode::Char('E') => {
+                                    if !gdrive.has_client_id() {
+                                        let current = gdrive.get_config().client_id;
+                                        app.gdrive_client_id_input = Some(current);
+                                    }
+                                }
+                                crossterm::event::KeyCode::Esc => {
+                                    if matches!(gdrive.status(), GDriveStatus::Authorizing { .. })
+                                    {
+                                        gdrive.cancel_auth();
+                                    }
+                                    app.gdrive_popup_open = false;
+                                }
+                                _ => {}
+                            }
+                        }
+                        app.gdrive_status = gdrive.status().clone();
+                        app.gdrive_has_client_id = gdrive.has_client_id();
+                        app.gdrive_last_sync = gdrive.last_sync().map(|s| s.to_string());
+                        continue;
+                    }
+
+                    // ── Project color picker key handling ───────────────
+                    if app.color_picker_open {
+                        match k.code {
+                            crossterm::event::KeyCode::Left => {
+                                app.apply(Action::ColorPickerLeft);
+                            }
+                            crossterm::event::KeyCode::Right => {
+                                app.apply(Action::ColorPickerRight);
+                            }
+                            crossterm::event::KeyCode::Enter => {
+                                app.apply(Action::ColorPickerConfirm);
+                                // Persist the updated color map
+                                if app.colors_dirty {
+                                    if let Err(e) = provider.save_project_colors(&app.project_colors)
+                                    {
+                                        app.banner =
+                                            Some(format!("Failed to save project colors: {e}"));
+                                    }
+                                    app.colors_dirty = false;
+                                }
+                            }
+                            crossterm::event::KeyCode::Esc => {
+                                app.color_picker_open = false;
+                            }
+                            crossterm::event::KeyCode::Tab => {
+                                app.color_picker_open = false;
+                            }
+                            _ => {}
+                        }
+                        continue;
+                    }
+
                     if let Some(edit) = app.edit_state.as_mut() {
-                        // Clamp scroll_y generously — actual clamping happens in render.
-                        // Use generous estimate to avoid getting stuck on ↑/↓.
-                        let est_lines = edit
-                            .description
-                            .lines()
-                            .count()
-                            .max(edit.description.len() / 40)
-                            .saturating_add(5) as u16; // generous padding
-                        edit.scroll_y = edit.scroll_y.min(est_lines);
+                        // Terminal-size helper for description field (85% modal, 13 rows fixed overhead)
+                        let desc_dims = || -> (usize, usize) {
+                            crossterm::terminal::size()
+                                .ok()
+                                .map(|(tw, th)| {
+                                    let iw = ((tw as usize).saturating_mul(70) / 100).saturating_sub(2);
+                                    let dh = ((th as usize).saturating_mul(85) / 100).saturating_sub(15);
+                                    (iw, dh.max(1))
+                                })
+                                .unwrap_or((40, 5))
+                        };
 
                         match k.code {
                             crossterm::event::KeyCode::Esc => {
@@ -166,13 +359,21 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                 if edit.focus != EditFocus::Priority {
                                     edit.cursor_pos = edit.current_text().len();
                                 }
-                                // Reset scroll when switching fields
                                 edit.scroll_y = 0;
+                                // When entering Description, snap cursor into visible area
+                                if edit.focus == EditFocus::Description {
+                                    let (iw, dh) = desc_dims();
+                                    edit.ensure_cursor_visible(iw, dh);
+                                }
                             }
                             crossterm::event::KeyCode::Char('k')
                                 if k.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) =>
                             {
                                 edit.insert_char('\n');
+                                if edit.focus == EditFocus::Description {
+                                    let (iw, dh) = desc_dims();
+                                    edit.ensure_cursor_visible(iw, dh);
+                                }
                                 continue;
                             }
                             crossterm::event::KeyCode::Enter => {
@@ -196,10 +397,11 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                                         b.apply_project_filter(&app.project_filter);
                                                         b.sort_cards_with(app.sort_order);
                                                         app.board = b;
-                                                        focus_card_by_id(&mut app, &card_id);
-                                                        app.banner = Some("Card created".to_string());
-                                                    }
-                                                    Err(e) => app.banner = Some(format!("Reload failed: {e}")),
+                                                         focus_card_by_id(&mut app, &card_id);
+                                                         app.banner = Some("Card created".to_string());
+                                                         gdrive_sync(&mut gdrive, &mut app);
+                                                     }
+                                                     Err(e) => app.banner = Some(format!("Reload failed: {e}")),
                                                 }
                                             }
                                         }
@@ -217,10 +419,11 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                                 b.apply_project_filter(&app.project_filter);
                                                 b.sort_cards_with(app.sort_order);
                                                 app.board = b;
-                                                focus_card_by_id(&mut app, &card_id);
-                                                app.banner = Some("Card saved".to_string());
-                                            }
-                                            Err(e) => app.banner = Some(format!("Reload failed: {e}")),
+                                                 focus_card_by_id(&mut app, &card_id);
+                                                 app.banner = Some("Card saved".to_string());
+                                                 gdrive_sync(&mut gdrive, &mut app);
+                                             }
+                                             Err(e) => app.banner = Some(format!("Reload failed: {e}")),
                                         }
                                     }
                                 }
@@ -228,12 +431,24 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             }
                             crossterm::event::KeyCode::Char(c) => {
                                 edit.insert_char(c);
+                                if edit.focus == EditFocus::Description {
+                                    let (iw, dh) = desc_dims();
+                                    edit.ensure_cursor_visible(iw, dh);
+                                }
                             }
                             crossterm::event::KeyCode::Backspace => {
                                 edit.delete_prev();
+                                if edit.focus == EditFocus::Description {
+                                    let (iw, dh) = desc_dims();
+                                    edit.ensure_cursor_visible(iw, dh);
+                                }
                             }
                             crossterm::event::KeyCode::Delete => {
                                 edit.delete_curr();
+                                if edit.focus == EditFocus::Description {
+                                    let (iw, dh) = desc_dims();
+                                    edit.ensure_cursor_visible(iw, dh);
+                                }
                             }
                             crossterm::event::KeyCode::Left => {
                                 edit.move_cursor_left();
@@ -254,12 +469,30 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             crossterm::event::KeyCode::Up
                                 if edit.focus == EditFocus::Description =>
                             {
-                                edit.scroll_y = edit.scroll_y.saturating_sub(1);
+                                let (iw, dh) = desc_dims();
+                                edit.move_cursor_up(iw);
+                                edit.ensure_cursor_visible(iw, dh);
                             }
                             crossterm::event::KeyCode::Down
                                 if edit.focus == EditFocus::Description =>
                             {
-                                edit.scroll_y = (edit.scroll_y + 1).min(est_lines);
+                                let (iw, dh) = desc_dims();
+                                edit.move_cursor_down(iw);
+                                edit.ensure_cursor_visible(iw, dh);
+                            }
+                            crossterm::event::KeyCode::PageUp
+                                if edit.focus == EditFocus::Description =>
+                            {
+                                let (iw, dh) = desc_dims();
+                                edit.move_cursor_up_n(dh, iw);
+                                edit.ensure_cursor_visible(iw, dh);
+                            }
+                            crossterm::event::KeyCode::PageDown
+                                if edit.focus == EditFocus::Description =>
+                            {
+                                let (iw, dh) = desc_dims();
+                                edit.move_cursor_down_n(dh, iw);
+                                edit.ensure_cursor_visible(iw, dh);
                             }
                             _ => {}
                         }
@@ -268,7 +501,6 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
 
                     // Detail view scroll: up/down scroll content
                     if app.detail_open {
-                        // Clamp detail_scroll generously — actual clamping happens in render.
                         let est_lines = app
                             .board
                             .columns
@@ -276,11 +508,21 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                             .and_then(|col| col.cards.get(app.row))
                             .map(|card| {
                                 let lines = card.description.lines().count();
-                                let extra = card.description.len() / 40;
-                                (7 + lines + extra).saturating_add(5) as u16
+                                (7 + lines) as u16
                             })
                             .unwrap_or(0);
-                        app.detail_scroll = app.detail_scroll.min(est_lines);
+
+                        // Compute actual max_scroll using terminal size (matches render logic)
+                        let max_scroll = crossterm::terminal::size()
+                            .ok()
+                            .map(|(_tw, th)| {
+                                // main area = terminal - filter(3) - help(2) = th - 5
+                                // visible_height = main - borders(2) = th - 7
+                                let visible_height = (th as usize).saturating_sub(7);
+                                (est_lines as usize).saturating_sub(visible_height)
+                            })
+                            .unwrap_or(est_lines as usize);
+                        app.detail_scroll = app.detail_scroll.min(max_scroll as u16);
 
                         match k.code {
                             crossterm::event::KeyCode::Up => {
@@ -288,7 +530,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                 continue;
                             }
                             crossterm::event::KeyCode::Down => {
-                                app.detail_scroll = (app.detail_scroll + 1).min(est_lines);
+                                app.detail_scroll = (app.detail_scroll + 1).min(max_scroll as u16);
                                 continue;
                             }
                             _ => {}
@@ -351,12 +593,13 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                                             Ok(mut b) => {
                                                 b.sort_cards_with(app.sort_order);
                                                 app.board = b;
-                                                app.clamp();
-                                                app.banner = Some(format!("Card {card_id} deleted"));
-                                            }
-                                            Err(e) => {
-                                                app.banner = Some(format!("Reload failed: {e}"))
-                                            }
+                                                 app.clamp();
+                                                 app.banner = Some(format!("Card {card_id} deleted"));
+                                                 gdrive_sync(&mut gdrive, &mut app);
+                                             }
+                                             Err(e) => {
+                                                 app.banner = Some(format!("Reload failed: {e}"))
+                                             }
                                         }
                                     }
                                 }
@@ -375,7 +618,7 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                         continue;
                     }
 
-                    if let Some(a) = action_from_key(k.code, app.filter_focus) {
+                    if let Some(a) = action_from_key(k.code, k.modifiers, app.filter_focus) {
                         if quitting {
                             if matches!(a, Action::MoveLeft | Action::MoveRight) {
                                 continue;
@@ -607,6 +850,25 @@ fn update_quit_banner(
     } else {
         Some(format!("Finishing {pending} pending moves before quit..."))
     };
+}
+
+/// Upload the current board to Google Drive (best-effort).
+///
+/// Only does something if the GDrive client is authenticated. Errors are
+/// silently logged — they are visible in the popup status.
+fn gdrive_sync(gdrive: &mut GDriveClient, app: &mut App) {
+    if !gdrive.is_authenticated() {
+        return;
+    }
+    if let Ok(board_json) = serde_json::to_value(&app.board) {
+        if let Err(e) = gdrive.upload_board(&board_json) {
+            eprintln!("[gdrive] sync failed: {e}");
+        }
+    } else {
+        eprintln!("[gdrive] failed to serialize board");
+    }
+    app.gdrive_status = gdrive.status().clone();
+    app.gdrive_last_sync = gdrive.last_sync().map(|s| s.to_string());
 }
 
 fn spawn_move(card_id: String, dst: String) -> Receiver<Result<Option<Board>, String>> {

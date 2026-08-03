@@ -132,6 +132,46 @@ pub enum Command {
 
     /// List column ids, titles, and card counts
     Columns,
+
+    /// Sync board with a remote git repository (GitHub, GitLab, etc.)
+    ///
+    /// Uses git to synchronize the board directory with a remote.
+    /// Requires git to be installed.
+    Sync {
+        #[command(subcommand)]
+        action: SyncAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum SyncAction {
+    /// Initialize a git repo and connect to a remote
+    ///
+    /// If the board is not yet a git repo, creates one, commits existing cards,
+    /// adds the remote, and pushes/pulls to sync with it.
+    Init {
+        /// Remote URL (e.g. git@github.com:user/repo.git or https://...)
+        #[arg(long)]
+        remote: String,
+    },
+
+    /// Push local changes to the remote
+    ///
+    /// Stages all changes (git add -A), commits them with an automatic
+    /// timestamped message, and pushes to the remote.
+    Push {
+        /// Optional custom commit message
+        #[arg(long)]
+        message: Option<String>,
+    },
+
+    /// Pull remote changes to the local board
+    ///
+    /// Fetches from remote and fast-forwards the local branch.
+    Pull,
+
+    /// Show sync status: remote URL, last commit, working tree state
+    Status,
 }
 
 pub fn run(cmd: Command, fmt: Format) -> io::Result<()> {
@@ -259,8 +299,82 @@ pub fn run(cmd: Command, fmt: Format) -> io::Result<()> {
                 .map_err(|e| io::Error::other(e.to_string()))?;
             println!("{}", format::format_columns(&board, fmt).map_err(io::Error::other)?);
         }
+        Command::Sync { action } => run_sync(action)?,
     }
 
+    Ok(())
+}
+
+fn run_sync(action: SyncAction) -> io::Result<()> {
+    if !flow_core::sync::git_available() {
+        return Err(io::Error::other(
+            "Git is not installed. Install git first: sudo pacman -S git (Linux) or brew install git (Mac)",
+        ));
+    }
+
+    let path = flow_core::sync::board_path();
+
+    match action {
+        SyncAction::Init { remote } => {
+            let result = flow_core::sync::full_init(&path, &remote)
+                .map_err(|e| io::Error::other(e))?;
+            println!("{result}");
+        }
+        SyncAction::Push { message } => {
+            if !flow_core::sync::is_git_repo(&path) {
+                return Err(io::Error::other(
+                    "Board is not a git repo. Run `flow sync init --remote <url>` first.",
+                ));
+            }
+            let result = flow_core::sync::push(&path, message.as_deref())
+                .map_err(|e| io::Error::other(e))?;
+            println!("{result}");
+        }
+        SyncAction::Pull => {
+            if !flow_core::sync::is_git_repo(&path) {
+                return Err(io::Error::other(
+                    "Board is not a git repo. Run `flow sync init --remote <url>` first.",
+                ));
+            }
+            let result = flow_core::sync::pull(&path)
+                .map_err(|e| io::Error::other(e))?;
+            println!("{result}");
+        }
+        SyncAction::Status => {
+            if !flow_core::sync::is_git_repo(&path) {
+                println!("📋 Board directory: {}\nNot a git repo. Run `flow sync init --remote <url>` to set up sync.", path.display());
+                return Ok(());
+            }
+
+            let remote = flow_core::sync::get_remote(&path).unwrap_or_else(|_| "Not configured".to_string());
+            println!("📋 Sync Status");
+            println!("   Board:     {}", path.display());
+            println!("   Remote:    {remote}");
+
+            match flow_core::sync::log(&path, 3) {
+                Ok(log) if !log.trim().is_empty() => {
+                    println!("   Recent commits:");
+                    for line in log.lines() {
+                        println!("     {line}");
+                    }
+                }
+                _ => println!("   Recent commits: (none)"),
+            }
+
+            match flow_core::sync::status(&path) {
+                Ok(s) => {
+                    let dirty = s.lines().count() > 1; // More than just "nothing to commit"
+                    if dirty {
+                        println!("   Working tree:  UNCOMMITTED CHANGES");
+                        println!("{s}");
+                    } else {
+                        println!("   Working tree:  Clean");
+                    }
+                }
+                Err(e) => println!("   Working tree:  {e}"),
+            }
+        }
+    }
     Ok(())
 }
 

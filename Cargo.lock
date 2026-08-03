@@ -560,6 +560,7 @@ dependencies = [
  "flow-core",
  "flow-tui",
  "ratatui",
+ "serde_json",
 ]
 
 [[package]]

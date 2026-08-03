@@ -5,15 +5,25 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyModifiers};
 
 use crate::app::{Action, App};
+use crate::gdrive_tui;
 use crate::help::{help_text, render_help};
 use crate::edit::render_edit_modal;
 use crate::state::SearchState;
-use crate::util::{centered, priority_color, selected_card_id};
+use crate::util::{centered, priority_color, project_color, selected_card_id};
 
-pub fn action_from_key(code: KeyCode, filter_focus: bool) -> Option<Action> {
+pub fn action_from_key(code: KeyCode, modifiers: KeyModifiers, filter_focus: bool) -> Option<Action> {
+    // Ctrl+G toggles GDrive popup — works from any state
+    if code == KeyCode::Char('g') && modifiers.contains(KeyModifiers::CONTROL) {
+        return Some(Action::GDrive);
+    }
+    // Ctrl+T fallback for GDrive (some terminals intercept Ctrl+G)
+    if code == KeyCode::Char('t') && modifiers.contains(KeyModifiers::CONTROL) {
+        return Some(Action::GDrive);
+    }
+
     if filter_focus {
         // When filter bar has focus, ←/→/Enter/Esc/Tab are filter-aware
         return Some(match code {
@@ -22,34 +32,41 @@ pub fn action_from_key(code: KeyCode, filter_focus: bool) -> Option<Action> {
             KeyCode::Enter => Action::FilterConfirm,
             KeyCode::Esc => Action::CloseOrQuit,
             KeyCode::Tab => Action::TabFocus,
+            // 'c' opens the project color picker (only meaningful on a project tab)
+            KeyCode::Char('c') => Action::ColorPickerToggle,
             _ => return None,
         });
     }
 
-    Some(match code {
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Esc => Action::CloseOrQuit,
+    // Plain keys — allow SHIFT (needed for uppercase H/L), exclude Ctrl/Alt
+    if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT {
+        return Some(match code {
+            KeyCode::Char('q') => Action::Quit,
+            KeyCode::Esc => Action::CloseOrQuit,
 
-        KeyCode::Char('h') | KeyCode::Left => Action::FocusLeft,
-        KeyCode::Char('l') | KeyCode::Right => Action::FocusRight,
+            KeyCode::Char('h') | KeyCode::Left => Action::FocusLeft,
+            KeyCode::Char('l') | KeyCode::Right => Action::FocusRight,
 
-        KeyCode::Char('j') | KeyCode::Down => Action::SelectDown,
-        KeyCode::Char('k') | KeyCode::Up => Action::SelectUp,
+            KeyCode::Char('j') | KeyCode::Down => Action::SelectDown,
+            KeyCode::Char('k') | KeyCode::Up => Action::SelectUp,
 
-        KeyCode::Char('H') => Action::MoveLeft,
-        KeyCode::Char('L') => Action::MoveRight,
+            KeyCode::Char('H') => Action::MoveLeft,
+            KeyCode::Char('L') => Action::MoveRight,
 
-        KeyCode::Enter => Action::ToggleDetail,
-        KeyCode::Char('r') => Action::Refresh,
-        KeyCode::Char('d') => Action::Delete,
-        KeyCode::Char('a') | KeyCode::Char('n') => Action::Add,
-        KeyCode::Char('e') => Action::Edit,
-        KeyCode::Char('s') => Action::ToggleSort,
-        KeyCode::Char('/') => Action::Search,
-        KeyCode::Char('p') | KeyCode::Tab => Action::TabFocus,
+            KeyCode::Enter => Action::ToggleDetail,
+            KeyCode::Char('r') => Action::Refresh,
+            KeyCode::Char('d') => Action::Delete,
+            KeyCode::Char('a') | KeyCode::Char('n') => Action::Add,
+            KeyCode::Char('e') => Action::Edit,
+            KeyCode::Char('s') => Action::ToggleSort,
+            KeyCode::Char('/') => Action::Search,
+            KeyCode::Char('p') | KeyCode::Tab => Action::TabFocus,
 
-        _ => return None,
-    })
+            _ => return None,
+        });
+    }
+
+    None
 }
 
 pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
@@ -149,8 +166,7 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
             return;
         };
 
-        let centered_area = centered(70, 45, area);
-        f.render_widget(Clear, centered_area);
+        f.render_widget(Clear, main);
 
         let mut lines: Vec<Line> = Vec::new();
         lines.push(Line::from(Span::styled(
@@ -164,7 +180,7 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
         if !card.project.is_empty() {
             lines.push(Line::from(vec![
                 Span::raw("Project: "),
-                Span::styled(&card.project, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+                Span::styled(&card.project, Style::default().fg(project_color(&card.project, &app.project_colors)).add_modifier(Modifier::BOLD)),
             ]));
         }
         if !card.assignee.is_empty() {
@@ -189,7 +205,7 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
         }
 
         let total_lines = lines.len();
-        let visible_height = (centered_area.height.saturating_sub(2)) as usize;
+        let visible_height = (main.height.saturating_sub(2)) as usize;
         let max_scroll = total_lines.saturating_sub(visible_height);
         let scroll_y = (app.detail_scroll as usize).min(max_scroll) as u16;
         let detail_title = if max_scroll > 0 {
@@ -207,7 +223,7 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(Color::DarkGray)),
                 ),
-            centered_area,
+            main,
         );
     }
 
@@ -248,6 +264,22 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
     // Edit modal
     render_edit_modal(f, app);
 
+    // GDrive sync popup
+    if app.gdrive_popup_open {
+        gdrive_tui::render_popup(
+            f,
+            &app.gdrive_status,
+            app.gdrive_last_sync.as_deref(),
+            app.gdrive_has_client_id,
+            app.gdrive_client_id_input.as_deref(),
+        );
+    }
+
+    // Project color picker popup
+    if app.color_picker_open {
+        render_color_picker(f, app, area);
+    }
+
     // Help overlay — drawn last so it appears on top of everything
     render_help(f, app, render_area);
 }
@@ -257,11 +289,17 @@ fn render_filter_bar(f: &mut Frame, app: &App, rect: Rect) {
     use ratatui::widgets::Tabs;
 
     let projects = app.board.project_recency();
-    // Build tab titles: "All" + projects
+    // Build tab titles: "All" + projects (each project colored by its override/hash)
     let mut tab_titles: Vec<Line> = Vec::with_capacity(1 + projects.len());
     tab_titles.push(Line::from(" All "));
     for proj in &projects {
-        tab_titles.push(Line::from(format!(" {} ", proj)));
+        let color = project_color(proj, &app.project_colors);
+        let title = if app.filter_focus && selected_project(app).as_deref() == Some(proj.as_str()) {
+            format!(" [{}] ", proj)
+        } else {
+            format!(" {} ", proj)
+        };
+        tab_titles.push(Line::from(Span::styled(title, Style::default().fg(color))));
     }
 
     // Selected index follows filter_cursor (0 = All, 1+ = project position)
@@ -274,10 +312,15 @@ fn render_filter_bar(f: &mut Frame, app: &App, rect: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
+    let gdrive_label = gdrive_tui::status_indicator(&app.gdrive_status);
     let hint = if app.filter_focus {
-        " Tab to unfocus "
+        if app.filter_cursor > 0 {
+            format!("{gdrive_label} c: color  Tab: unfocus ")
+        } else {
+            format!("{gdrive_label} Tab to unfocus ")
+        }
     } else {
-        " Tab / p to filter "
+        format!("{gdrive_label} Tab / p to filter ")
     };
 
     let tabs = Tabs::new(tab_titles)
@@ -297,6 +340,81 @@ fn render_filter_bar(f: &mut Frame, app: &App, rect: Rect) {
         .style(Style::default().fg(Color::DarkGray));
 
     f.render_widget(tabs, rect);
+}
+
+/// Project currently under the filter cursor (None when "All" is selected).
+fn selected_project(app: &App) -> Option<String> {
+    if app.filter_cursor == 0 {
+        return None;
+    }
+    app.board
+        .project_recency()
+        .get(app.filter_cursor - 1)
+        .cloned()
+}
+
+/// Render the project color picker popup over the filter bar.
+fn render_color_picker(f: &mut Frame, app: &App, area: Rect) {
+    use ratatui::widgets::Paragraph;
+
+    let picker_area = centered(46, 30, area);
+    f.render_widget(Clear, picker_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::raw("Project: "),
+        Span::styled(
+            &app.color_picker_project,
+            Style::default().fg(project_color(&app.color_picker_project, &app.project_colors))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    // Two rows of palette swatches: name colored with its own color.
+    let palette = crate::util::PROJECT_COLOR_PALETTE;
+    let mid = palette.len() / 2;
+    for row in 0..2 {
+        let mut spans = Vec::new();
+        for (i, (name, color)) in palette.iter().enumerate().skip(row * mid).take(mid) {
+            let selected = i == app.color_picker_cursor;
+            let swatch = if selected {
+                format!("[{name}]")
+            } else {
+                format!(" {name} ")
+            };
+            let mut style = Style::default().fg(*color);
+            if selected {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            spans.push(Span::styled(swatch, style));
+            spans.push(Span::raw("  "));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("←/→", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw(" navigate   "),
+        Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw(" assign   "),
+        Span::styled("Esc", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::raw(" cancel"),
+    ]));
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(
+                Block::default()
+                    .title("Project Color")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            ),
+        picker_area,
+    );
 }
 
 pub fn draw_col(f: &mut Frame, app: &App, idx: usize, rect: Rect) {
@@ -327,12 +445,12 @@ pub fn draw_col(f: &mut Frame, app: &App, idx: usize, rect: Rect) {
             let title_style = if dimmed {
                 Style::default().fg(Color::DarkGray)
             } else {
-                Style::default()
+                Style::default().fg(priority_color(c.priority))
             };
             let proj_style = if dimmed {
                 Style::default().fg(Color::DarkGray)
             } else {
-                Style::default().fg(Color::Magenta)
+                Style::default().fg(project_color(&c.project, &app.project_colors))
             };
             let mut spans = vec![
                 Span::styled(format!("[{}] ", c.priority.short_label()), prio_style),
@@ -360,4 +478,41 @@ pub fn draw_col(f: &mut Frame, app: &App, idx: usize, rect: Rect) {
     }
 
     f.render_stateful_widget(list, rect, &mut state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    fn action(code: KeyCode, mods: KeyModifiers) -> Option<Action> {
+        action_from_key(code, mods, false)
+    }
+
+    #[test]
+    fn uppercase_h_with_shift_moves_card_left() {
+        assert_eq!(action(KeyCode::Char('H'), KeyModifiers::SHIFT), Some(Action::MoveLeft));
+    }
+
+    #[test]
+    fn uppercase_l_with_shift_moves_card_right() {
+        assert_eq!(action(KeyCode::Char('L'), KeyModifiers::SHIFT), Some(Action::MoveRight));
+    }
+
+    #[test]
+    fn lowercase_h_focuses_left() {
+        assert_eq!(action(KeyCode::Char('h'), KeyModifiers::empty()), Some(Action::FocusLeft));
+    }
+
+    #[test]
+    fn lowercase_l_focuses_right() {
+        assert_eq!(action(KeyCode::Char('l'), KeyModifiers::empty()), Some(Action::FocusRight));
+    }
+
+    #[test]
+    fn ctrl_keys_are_not_consumed_as_plain_keys() {
+        // Ctrl+G/Ctrl+T handled before the plain-key block; ensure they map to GDrive
+        assert_eq!(action(KeyCode::Char('g'), KeyModifiers::CONTROL), Some(Action::GDrive));
+        assert_eq!(action(KeyCode::Char('t'), KeyModifiers::CONTROL), Some(Action::GDrive));
+    }
 }

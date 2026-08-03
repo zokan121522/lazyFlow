@@ -1,5 +1,7 @@
 use flow_core::model::{Card, Priority};
 
+use crate::util::{calculate_visual_cursor_pos, find_closest_in_visual_line, wrap_text};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EditFocus {
     Title,
@@ -121,6 +123,78 @@ impl EditState {
             self.cursor_pos = idx;
         } else if pos < text.len() {
             self.cursor_pos = text.len();
+        }
+    }
+
+    /// Move cursor up one visual line in the Description field.
+    /// `width` is the inner width of the description widget.
+    pub fn move_cursor_up(&mut self, width: usize) {
+        if self.focus != EditFocus::Description || width == 0 || self.description.is_empty() {
+            return;
+        }
+        let (cx, cy) = calculate_visual_cursor_pos(&self.description, self.cursor_pos, width);
+        if cy == 0 {
+            return;
+        }
+        self.cursor_pos = find_closest_in_visual_line(&self.description, cx, cy - 1, width);
+    }
+
+    /// Move cursor down one visual line in the Description field.
+    /// `width` is the inner width of the description widget.
+    pub fn move_cursor_down(&mut self, width: usize) {
+        if self.focus != EditFocus::Description || width == 0 || self.description.is_empty() {
+            return;
+        }
+        let (cx, cy) = calculate_visual_cursor_pos(&self.description, self.cursor_pos, width);
+        let total = wrap_text(&self.description, width).len();
+        if cy >= total.saturating_sub(1) {
+            return;
+        }
+        self.cursor_pos = find_closest_in_visual_line(&self.description, cx, cy + 1, width);
+    }
+
+    /// Real scroll: always keep the cursor near the top of the viewport (line 2).
+    /// Every ↑/↓ movement causes the viewport to scroll smoothly so the cursor
+    /// stays at a consistent visual position — just like a real text editor.
+    pub fn ensure_cursor_visible(&mut self, width: usize, visible_height: usize) {
+        if self.focus != EditFocus::Description || width == 0 || visible_height == 0 {
+            return;
+        }
+        let (_, cy) = calculate_visual_cursor_pos(&self.description, self.cursor_pos, width);
+        let total = wrap_text(&self.description, width).len();
+        // Keep cursor at visual line 2 of the viewport (offset by 1 from top)
+        let ideal = if cy >= 2 { cy - 2 } else { 0 };
+        let max_scroll = total.saturating_sub(visible_height);
+        self.scroll_y = ideal.min(max_scroll) as u16;
+    }
+
+    /// Move cursor up by `n` visual lines in the Description field.
+    pub fn move_cursor_up_n(&mut self, n: usize, width: usize) {
+        for _ in 0..n {
+            if self.focus != EditFocus::Description || width == 0 || self.description.is_empty() {
+                break;
+            }
+            let (cx, cy) = calculate_visual_cursor_pos(&self.description, self.cursor_pos, width);
+            if cy == 0 {
+                break;
+            }
+            let target_y = cy.saturating_sub(1);
+            self.cursor_pos = find_closest_in_visual_line(&self.description, cx, target_y, width);
+        }
+    }
+
+    /// Move cursor down by `n` visual lines in the Description field.
+    pub fn move_cursor_down_n(&mut self, n: usize, width: usize) {
+        for _ in 0..n {
+            if self.focus != EditFocus::Description || width == 0 || self.description.is_empty() {
+                break;
+            }
+            let (cx, cy) = calculate_visual_cursor_pos(&self.description, self.cursor_pos, width);
+            let total = wrap_text(&self.description, width).len();
+            if cy >= total.saturating_sub(1) {
+                break;
+            }
+            self.cursor_pos = find_closest_in_visual_line(&self.description, cx, cy + 1, width);
         }
     }
 }

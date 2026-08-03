@@ -327,6 +327,26 @@ fn order_append(path: &Path, id: &str) -> io::Result<()> {
     fs::write(path, s)
 }
 
+/// Load the per-project color map from `colors.json` in the board root.
+/// Missing or unparseable file yields an empty map (caller falls back to defaults).
+pub fn load_project_colors(root: &Path) -> std::collections::HashMap<String, String> {
+    let path = root.join("colors.json");
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return std::collections::HashMap::new();
+    };
+    serde_json::from_str(&raw).unwrap_or_default()
+}
+
+/// Persist the per-project color map to `colors.json` in the board root.
+pub fn save_project_colors(
+    root: &Path,
+    colors: &std::collections::HashMap<String, String>,
+) -> io::Result<()> {
+    let path = root.join("colors.json");
+    let raw = serde_json::to_string_pretty(colors)?;
+    fs::write(path, raw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

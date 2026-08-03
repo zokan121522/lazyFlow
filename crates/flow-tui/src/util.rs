@@ -11,10 +11,61 @@ pub fn priority_color(p: Priority) -> Color {
     match p {
         Priority::Bug => Color::Red,
         Priority::High => Color::Yellow,
-        Priority::Medium => Color::White,
+        Priority::Medium => Color::LightBlue,
         Priority::Low => Color::DarkGray,
         Priority::Wishlist => Color::Cyan,
     }
+}
+
+/// Canonical palette shown in the project color picker.
+/// Names are stable identifiers persisted in `colors.json`.
+pub const PROJECT_COLOR_PALETTE: &[(&str, Color)] = &[
+    ("Red", Color::Red),
+    ("LightRed", Color::LightRed),
+    ("Green", Color::Green),
+    ("LightGreen", Color::LightGreen),
+    ("Yellow", Color::Yellow),
+    ("LightYellow", Color::LightYellow),
+    ("Blue", Color::Blue),
+    ("LightBlue", Color::LightBlue),
+    ("Magenta", Color::Magenta),
+    ("LightMagenta", Color::LightMagenta),
+    ("Cyan", Color::Cyan),
+    ("LightCyan", Color::LightCyan),
+];
+
+/// Resolve a persisted color name (from `colors.json`) to a `Color`.
+pub fn color_from_name(name: &str) -> Option<Color> {
+    PROJECT_COLOR_PALETTE
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, c)| *c)
+}
+
+/// Canonical name for a palette color (used when persisting).
+pub fn color_name(color: Color) -> &'static str {
+    PROJECT_COLOR_PALETTE
+        .iter()
+        .find(|(_, c)| *c == color)
+        .map(|(n, _)| *n)
+        .unwrap_or("LightCyan")
+}
+
+/// Color for a project name. If the project has an override in `colors`,
+/// that color wins; otherwise a deterministic hash picks from the palette.
+pub fn project_color(name: &str, colors: &std::collections::HashMap<String, String>) -> Color {
+    if let Some(persisted) = colors.get(name) {
+        if let Some(c) = color_from_name(persisted) {
+            return c;
+        }
+    }
+    let h: u64 = name
+        .to_lowercase()
+        .bytes()
+        .fold(0xcbf29ce484222325u64, |acc, b| {
+            (acc ^ b as u64).wrapping_mul(0x100000001b3)
+        });
+    PROJECT_COLOR_PALETTE[(h as usize) % PROJECT_COLOR_PALETTE.len()].1
 }
 
 pub fn centered(px: u16, py: u16, r: Rect) -> Rect {
@@ -146,4 +197,82 @@ pub fn calculate_visual_cursor_pos(text: &str, cursor_pos: usize, width: usize) 
     }
 
     (0, y)
+}
+
+/// Find the best byte position in `text` closest to a target visual line and column.
+/// Scans all character boundaries and the end position to find the closest match.
+pub fn find_closest_in_visual_line(text: &str, target_x: usize, target_y: usize, width: usize) -> usize {
+    let mut best_pos = 0;
+    let mut best_x_dist = usize::MAX;
+
+    for (byte_idx, _) in text.char_indices() {
+        let (x, y) = calculate_visual_cursor_pos(text, byte_idx, width);
+        if y == target_y {
+            let x_dist = x.abs_diff(target_x);
+            if x_dist < best_x_dist {
+                best_x_dist = x_dist;
+                best_pos = byte_idx;
+            }
+        }
+    }
+
+    // Also try end-of-string position
+    let (x, y) = calculate_visual_cursor_pos(text, text.len(), width);
+    if y == target_y && x.abs_diff(target_x) < best_x_dist {
+        best_pos = text.len();
+    }
+
+    best_pos
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn map(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn color_roundtrip_palette_names() {
+        for (name, color) in PROJECT_COLOR_PALETTE {
+            assert_eq!(color_from_name(name), Some(*color), "parse {name}");
+            assert_eq!(color_name(*color), *name, "name of {name}");
+        }
+    }
+
+    #[test]
+    fn color_from_name_is_case_insensitive() {
+        assert_eq!(color_from_name("lightblue"), Some(Color::LightBlue));
+        assert_eq!(color_from_name("LIGHTRED"), Some(Color::LightRed));
+        assert_eq!(color_from_name("nope"), None);
+    }
+
+    #[test]
+    fn project_color_uses_override_when_present() {
+        let colors = map(&[("studyflow", "LightCyan")]);
+        assert_eq!(project_color("studyflow", &colors), Color::LightCyan);
+    }
+
+    #[test]
+    fn project_color_falls_back_to_hash_without_override() {
+        let colors = map(&[]);
+        // Deterministic: same name always yields same color.
+        let a = project_color("studyflow", &colors);
+        let b = project_color("studyflow", &colors);
+        assert_eq!(a, b);
+        // Different names generally differ (palette has 12 entries).
+        let c = project_color("server", &colors);
+        assert_eq!(project_color("server", &colors), c);
+    }
+
+    #[test]
+    fn project_color_ignores_invalid_override() {
+        let colors = map(&[("studyflow", "not-a-color")]);
+        // Falls back to hash instead of panicking.
+        let _ = project_color("studyflow", &colors);
+    }
 }
