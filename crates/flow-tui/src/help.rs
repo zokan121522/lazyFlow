@@ -87,6 +87,7 @@ pub fn render_help(f: &mut Frame, app: &App, render_area: Option<Rect>) {
         )),
         Line::from("  Tab / p     Focus filter bar"),
         Line::from("  ← / →       Select project"),
+        Line::from("  c           Pick project color (palette)"),
         Line::from("  Enter       Confirm filter"),
         Line::from("  Esc         Unfocus filter bar"),
         Line::from(""),

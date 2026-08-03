@@ -98,6 +98,21 @@ impl Provider for LocalProvider {
             source: err,
         })
     }
+
+    fn load_project_colors(&mut self) -> std::collections::HashMap<String, String> {
+        store_fs::load_project_colors(&self.root)
+    }
+
+    fn save_project_colors(
+        &mut self,
+        colors: &std::collections::HashMap<String, String>,
+    ) -> Result<(), ProviderError> {
+        store_fs::save_project_colors(&self.root, colors).map_err(|source| ProviderError::Io {
+            op: "save_project_colors".to_string(),
+            path: self.root.clone(),
+            source,
+        })
+    }
 }
 
 fn map_load_err(op: &str, root: &Path, err: io::Error) -> ProviderError {

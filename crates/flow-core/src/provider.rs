@@ -65,6 +65,21 @@ pub trait Provider {
             msg: "update_card not supported by current provider".to_string(),
         })
     }
+
+    /// Load the per-project color map. Default: empty map (no overrides).
+    fn load_project_colors(&mut self) -> std::collections::HashMap<String, String> {
+        std::collections::HashMap::new()
+    }
+
+    /// Persist the per-project color map. Default: no-op error (unsupported).
+    fn save_project_colors(
+        &mut self,
+        _colors: &std::collections::HashMap<String, String>,
+    ) -> Result<(), ProviderError> {
+        Err(ProviderError::Parse {
+            msg: "project colors not supported by current provider".to_string(),
+        })
+    }
 }
 
 pub fn from_env() -> Box<dyn Provider> {

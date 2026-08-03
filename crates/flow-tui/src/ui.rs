@@ -12,7 +12,7 @@ use crate::gdrive_tui;
 use crate::help::{help_text, render_help};
 use crate::edit::render_edit_modal;
 use crate::state::SearchState;
-use crate::util::{centered, priority_color, selected_card_id};
+use crate::util::{centered, priority_color, project_color, selected_card_id};
 
 pub fn action_from_key(code: KeyCode, modifiers: KeyModifiers, filter_focus: bool) -> Option<Action> {
     // Ctrl+G toggles GDrive popup — works from any state
@@ -32,6 +32,8 @@ pub fn action_from_key(code: KeyCode, modifiers: KeyModifiers, filter_focus: boo
             KeyCode::Enter => Action::FilterConfirm,
             KeyCode::Esc => Action::CloseOrQuit,
             KeyCode::Tab => Action::TabFocus,
+            // 'c' opens the project color picker (only meaningful on a project tab)
+            KeyCode::Char('c') => Action::ColorPickerToggle,
             _ => return None,
         });
     }
@@ -178,7 +180,7 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
         if !card.project.is_empty() {
             lines.push(Line::from(vec![
                 Span::raw("Project: "),
-                Span::styled(&card.project, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+                Span::styled(&card.project, Style::default().fg(project_color(&card.project, &app.project_colors)).add_modifier(Modifier::BOLD)),
             ]));
         }
         if !card.assignee.is_empty() {
@@ -273,6 +275,11 @@ pub fn render(f: &mut Frame, app: &App, render_area: Option<Rect>) {
         );
     }
 
+    // Project color picker popup
+    if app.color_picker_open {
+        render_color_picker(f, app, area);
+    }
+
     // Help overlay — drawn last so it appears on top of everything
     render_help(f, app, render_area);
 }
@@ -282,11 +289,17 @@ fn render_filter_bar(f: &mut Frame, app: &App, rect: Rect) {
     use ratatui::widgets::Tabs;
 
     let projects = app.board.project_recency();
-    // Build tab titles: "All" + projects
+    // Build tab titles: "All" + projects (each project colored by its override/hash)
     let mut tab_titles: Vec<Line> = Vec::with_capacity(1 + projects.len());
     tab_titles.push(Line::from(" All "));
     for proj in &projects {
-        tab_titles.push(Line::from(format!(" {} ", proj)));
+        let color = project_color(proj, &app.project_colors);
+        let title = if app.filter_focus && selected_project(app).as_deref() == Some(proj.as_str()) {
+            format!(" [{}] ", proj)
+        } else {
+            format!(" {} ", proj)
+        };
+        tab_titles.push(Line::from(Span::styled(title, Style::default().fg(color))));
     }
 
     // Selected index follows filter_cursor (0 = All, 1+ = project position)
@@ -301,7 +314,11 @@ fn render_filter_bar(f: &mut Frame, app: &App, rect: Rect) {
 
     let gdrive_label = gdrive_tui::status_indicator(&app.gdrive_status);
     let hint = if app.filter_focus {
-        format!("{gdrive_label} Tab to unfocus ")
+        if app.filter_cursor > 0 {
+            format!("{gdrive_label} c: color  Tab: unfocus ")
+        } else {
+            format!("{gdrive_label} Tab to unfocus ")
+        }
     } else {
         format!("{gdrive_label} Tab / p to filter ")
     };
@@ -323,6 +340,81 @@ fn render_filter_bar(f: &mut Frame, app: &App, rect: Rect) {
         .style(Style::default().fg(Color::DarkGray));
 
     f.render_widget(tabs, rect);
+}
+
+/// Project currently under the filter cursor (None when "All" is selected).
+fn selected_project(app: &App) -> Option<String> {
+    if app.filter_cursor == 0 {
+        return None;
+    }
+    app.board
+        .project_recency()
+        .get(app.filter_cursor - 1)
+        .cloned()
+}
+
+/// Render the project color picker popup over the filter bar.
+fn render_color_picker(f: &mut Frame, app: &App, area: Rect) {
+    use ratatui::widgets::Paragraph;
+
+    let picker_area = centered(46, 30, area);
+    f.render_widget(Clear, picker_area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::raw("Project: "),
+        Span::styled(
+            &app.color_picker_project,
+            Style::default().fg(project_color(&app.color_picker_project, &app.project_colors))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    // Two rows of palette swatches: name colored with its own color.
+    let palette = crate::util::PROJECT_COLOR_PALETTE;
+    let mid = palette.len() / 2;
+    for row in 0..2 {
+        let mut spans = Vec::new();
+        for (i, (name, color)) in palette.iter().enumerate().skip(row * mid).take(mid) {
+            let selected = i == app.color_picker_cursor;
+            let swatch = if selected {
+                format!("[{name}]")
+            } else {
+                format!(" {name} ")
+            };
+            let mut style = Style::default().fg(*color);
+            if selected {
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            spans.push(Span::styled(swatch, style));
+            spans.push(Span::raw("  "));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("←/→", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw(" navigate   "),
+        Span::styled("Enter", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw(" assign   "),
+        Span::styled("Esc", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::raw(" cancel"),
+    ]));
+
+    f.render_widget(
+        Paragraph::new(lines)
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(
+                Block::default()
+                    .title("Project Color")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Cyan)),
+            ),
+        picker_area,
+    );
 }
 
 pub fn draw_col(f: &mut Frame, app: &App, idx: usize, rect: Rect) {
@@ -353,12 +445,12 @@ pub fn draw_col(f: &mut Frame, app: &App, idx: usize, rect: Rect) {
             let title_style = if dimmed {
                 Style::default().fg(Color::DarkGray)
             } else {
-                Style::default()
+                Style::default().fg(priority_color(c.priority))
             };
             let proj_style = if dimmed {
                 Style::default().fg(Color::DarkGray)
             } else {
-                Style::default().fg(Color::Magenta)
+                Style::default().fg(project_color(&c.project, &app.project_colors))
             };
             let mut spans = vec![
                 Span::styled(format!("[{}] ", c.priority.short_label()), prio_style),

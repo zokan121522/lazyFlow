@@ -66,6 +66,9 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
     app.refresh_interval_ms = refresh_interval;
     app.focus_first_non_empty();
 
+    // Per-project color overrides from colors.json (best-effort).
+    app.project_colors = provider.load_project_colors();
+
     // ── Google Drive init ──────────────────────────────────────────────
     let mut gdrive = GDriveClient::new();
     app.gdrive_status = gdrive.status().clone();
@@ -299,6 +302,38 @@ fn run_tui(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> io::Result<
                         app.gdrive_status = gdrive.status().clone();
                         app.gdrive_has_client_id = gdrive.has_client_id();
                         app.gdrive_last_sync = gdrive.last_sync().map(|s| s.to_string());
+                        continue;
+                    }
+
+                    // ── Project color picker key handling ───────────────
+                    if app.color_picker_open {
+                        match k.code {
+                            crossterm::event::KeyCode::Left => {
+                                app.apply(Action::ColorPickerLeft);
+                            }
+                            crossterm::event::KeyCode::Right => {
+                                app.apply(Action::ColorPickerRight);
+                            }
+                            crossterm::event::KeyCode::Enter => {
+                                app.apply(Action::ColorPickerConfirm);
+                                // Persist the updated color map
+                                if app.colors_dirty {
+                                    if let Err(e) = provider.save_project_colors(&app.project_colors)
+                                    {
+                                        app.banner =
+                                            Some(format!("Failed to save project colors: {e}"));
+                                    }
+                                    app.colors_dirty = false;
+                                }
+                            }
+                            crossterm::event::KeyCode::Esc => {
+                                app.color_picker_open = false;
+                            }
+                            crossterm::event::KeyCode::Tab => {
+                                app.color_picker_open = false;
+                            }
+                            _ => {}
+                        }
                         continue;
                     }
 
