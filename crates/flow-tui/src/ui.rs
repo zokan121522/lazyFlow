@@ -36,8 +36,8 @@ pub fn action_from_key(code: KeyCode, modifiers: KeyModifiers, filter_focus: boo
         });
     }
 
-    // Plain keys (no Ctrl modifier)
-    if modifiers.is_empty() {
+    // Plain keys — allow SHIFT (needed for uppercase H/L), exclude Ctrl/Alt
+    if modifiers.is_empty() || modifiers == KeyModifiers::SHIFT {
         return Some(match code {
             KeyCode::Char('q') => Action::Quit,
             KeyCode::Esc => Action::CloseOrQuit,
@@ -386,4 +386,41 @@ pub fn draw_col(f: &mut Frame, app: &App, idx: usize, rect: Rect) {
     }
 
     f.render_stateful_widget(list, rect, &mut state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+
+    fn action(code: KeyCode, mods: KeyModifiers) -> Option<Action> {
+        action_from_key(code, mods, false)
+    }
+
+    #[test]
+    fn uppercase_h_with_shift_moves_card_left() {
+        assert_eq!(action(KeyCode::Char('H'), KeyModifiers::SHIFT), Some(Action::MoveLeft));
+    }
+
+    #[test]
+    fn uppercase_l_with_shift_moves_card_right() {
+        assert_eq!(action(KeyCode::Char('L'), KeyModifiers::SHIFT), Some(Action::MoveRight));
+    }
+
+    #[test]
+    fn lowercase_h_focuses_left() {
+        assert_eq!(action(KeyCode::Char('h'), KeyModifiers::empty()), Some(Action::FocusLeft));
+    }
+
+    #[test]
+    fn lowercase_l_focuses_right() {
+        assert_eq!(action(KeyCode::Char('l'), KeyModifiers::empty()), Some(Action::FocusRight));
+    }
+
+    #[test]
+    fn ctrl_keys_are_not_consumed_as_plain_keys() {
+        // Ctrl+G/Ctrl+T handled before the plain-key block; ensure they map to GDrive
+        assert_eq!(action(KeyCode::Char('g'), KeyModifiers::CONTROL), Some(Action::GDrive));
+        assert_eq!(action(KeyCode::Char('t'), KeyModifiers::CONTROL), Some(Action::GDrive));
+    }
 }
